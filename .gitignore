@@ -1,0 +1,11 @@
+# Environment files
+.env
+.venv/
+myenv/
+
+# Python cache
+__pycache__/
+
+# Uploaded / media files
+uploads/
+media/

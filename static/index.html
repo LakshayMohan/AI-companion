@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AI Voice Companion</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="background-title">The Machine Mind</div>
+    <div class="agent-container">
+        <h1>AI Companion</h1>
+        <p>Press the button to speak and get an AI-powered response.</p>
+        
+        <div id="controls">
+            <canvas id="audioVisualizer" width="180" height="180"></canvas>
+            
+            <button id="recordBtn" class="record-button">
+                <svg class="mic-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                    <path d="M19 10v1a7 7 0 0 1-14 0v-1h2v1a5 5 0 0 0 10 0v-1h2z"/>
+                </svg>
+                <span id="recordBtnText">Record</span>
+            </button>
+        </div>
+
+        <p id="status" class="status-text">Ready to start</p>
+        <audio id="responseAudio" style="display: none;"></audio>
+
+        <div id="transcription-container" style="display: none;">
+            <h4>Your question:</h4>
+            <div id="transcriptionOutput" class="response-box user-box"></div>
+        </div>
+        
+        <div id="llm-response-container" style="display: none;">
+            <h4>AI's response:</h4>
+            <div id="llmResponseOutput" class="response-box llm-box"></div>
+        </div>
+    </div>
+    <script src="/static/script.js"></script>
+</body>
+</html>
