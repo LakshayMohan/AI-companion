@@ -1,158 +1,122 @@
-# 30 Days of AI Voice Agents | Day 13: Documentation
-
+# AI Voice Agents 
+---
 # AI Voice Companion
 
+## 📑 Table of Contents
 
+- [Introduction](#introduction)
+- [Features](#features)
+- [What You'll Need](#what-youll-need)
+- [Tools Used](#tools-used)
+- [Project Structure](#project-structure)
+- [Installation & Setup](#installation--setup)
+- [Usage](#usage)
+- [Special Thanks](#special-thanks)
+- [License](#license)
 
-This application allows a user to have a spoken conversation with an AI agent. It captures the user's voice, transcribes it to text, sends it to a large language model (LLM) for a response, converts the AI's text response back into audio, and plays it back to the user, creating a seamless conversational loop.
+---
+
+## 📖 Introduction
+
+The *AI Voice Agent* is designed to demonstrate the possibilities of voice-first AI applications.  
+It listens to user speech, transcribes it in real time, processes it using Google Gemini for intelligent responses, and then delivers those responses back using high-quality text-to-speech synthesis via Murf AI.
+
+This setup is ideal for building:
+
+- AI assistants
+- Customer service bots
+- Interactive storytelling agents
+- Educational voice tutors
+
+---
 
 ## ✨ Features
 
-* **Real-Time Voice Interaction**: Speak directly to the AI and hear its response.
-* **Dynamic Audio Visualization**: A circular, oscillating visualizer activates and revolves around the record button, reacting to the amplitude of both the user's voice (during recording) and the AI's voice (during playback).
-* **Modern "Glassmorphism" UI**: A sleek, transparent interface that is both beautiful and intuitive.
-* **Session-Based Context**: The conversation history is maintained within a session, allowing the AI to remember previous parts of the dialogue.
-* **On-Screen Transcription**: Both the user's transcribed question and the AI's text response are displayed for clarity.
+- 🎙 *Real-time Speech Capture* using the browser's MediaRecorder API.
+- 📝 *Speech-to-Text (STT)* powered by AssemblyAI.
+- 🧠 *Conversational AI* using Google Gemini.
+- 🗣 *Natural Text-to-Speech (TTS)* with Murf AI.
+- ⚡ *FastAPI Backend* for speed and scalability.
+- 🌐 *Lightweight Frontend* built with HTML, CSS, and JavaScript.
+- 🔑 *Secure API Key Management* using .env files.
+
+---
+
+## 🛠 What You'll Need
+
+- *FastAPI* (Python)
+- *Murf AI API key*
+- *AssemblyAI API key*
+- *Google Gemini API key*
+- HTML, CSS, JavaScript frontend
+- .env file to securely store API keys
+
+---
+
+## 🧩 Tools Used
+
+| Tool              | Purpose                         |
+| ----------------- | ------------------------------- |
+| *Murf AI*       | Text-to-Speech (TTS)            |
+| *FastAPI*       | Backend API server              |
+| *HTML/CSS/JS*   | UI for interaction and playback |
+| *MediaRecorder* | Echo Bot mic capture + playback |
+
+---
+
+## 📂 Project Structure
+
+AI_VOICE_AGENT/
+├── static/
+│ ├── index.html
+│ ├── script.js
+│ ├── style.css
+├── uploads/
+├── .env
+├── main.py
+└── README.md
 
 
 
-## 🏗️ Architecture
 
-The application follows a client-server architecture. The entire conversational flow is managed through a single API endpoint, creating a robust and stateful interaction.
+---
 
-1. **Client (Frontend)**: The user clicks the record button. The browser's `MediaRecorder` API captures audio. A live visualizer provides feedback.
-2. **API Request**: When recording stops, the audio data (as a Blob) is sent via a `POST` request to the backend server.
-3. **Backend (FastAPI Server)**:
-    * Receives the audio file.
-    * **Speech-to-Text (STT)**: Uses an STT service (e.g., Deepgram) to transcribe the audio into text.
-    * **Language Model (LLM)**: Sends the transcribed text to an LLM service (e.g., OpenAI's GPT) to generate a conversational response.
-    * **Text-to-Speech (TTS)**: Takes the LLM's text response and uses a TTS service (e.g., ElevenLabs, Deepgram Aura) to convert it into high-quality audio.
-4. **API Response**: The server returns a JSON object to the client containing the user's transcription, the AI's text response, and a URL for the generated AI audio.
-5. **Client (Frontend)**:
-    * Receives the JSON data and displays the transcriptions.
-    * Automatically plays the AI's audio response.
-    * The audio visualizer activates again, this time reacting to the AI's speech.
+## ⚙ Installation & Setup
 
-## 🛠️ Tech Stack
+### 1️⃣ Clone the Repository
+bash
+git clone https://github.com/theritikyadav11/AI_Voice_Agent.git
+cd AI_Voice_Agent
 
-* **Frontend**:
-    * HTML5
-    * CSS3 (with animations and modern layout techniques)
-    * Vanilla JavaScript (using `fetch`, `MediaRecorder`, and `Web Audio API`)
-* **Backend**:
-    * Python 3.10+
-    * FastAPI (for building the high-performance API)
-    * Uvicorn (as the ASGI server)
-* **AI Services**:
-    * **Speech-to-Text**: Deepgram
-    * **LLM**: OpenAI
-    * **Text-to-Speech**: ElevenLabs or Deepgram
+### 2️⃣ Create and Activate Virtual Environment
+bash
+python -m venv .venv
+.venv\Scripts\activate
 
+### 3️⃣ Configure API Keys
+bash
+MURF_API_KEY=your_murf_api_key
+ASSEMBLY_API_KEY=your_assemblyai_api_key
+GEMINI_API_KEY=your_gemini_api_key
 
-## 🚀 Getting Started
-
-Follow these instructions to get a copy of the project up and running on your local machine.
-
-### Prerequisites
-
-* Python 3.10 or later
-* `pip` package manager
-* An account and API key for the following services:
-    * [Deepgram](https://deepgram.com/) (for STT)
-    * [OpenAI](https://openai.com/) (for LLM)
-    * [ElevenLabs](https://elevenlabs.io/) (for TTS) - *or you can use Deepgram's TTS*
-
-
-### Backend Setup
-
-1. **Clone the repository:**
-
-```sh
-git clone https://github.com/your-username/ai-voice-companion.git
-cd ai-voice-companion
-```
-
-2. **Create and activate a virtual environment:**
-    * **macOS/Linux:**
-
-```sh
-python3 -m venv venv
-source venv/bin/activate
-```
-
-    * **Windows:**
-
-```sh
-python -m venv venv
-.\venv\Scripts\activate
-```
-
-3. **Install the required Python packages:**
-*(You will need a `requirements.txt` file containing the dependencies)*
-
-```sh
-pip install -r requirements.txt
-```
-
-Your `requirements.txt` should look something like this:
-
-```
-fastapi
-uvicorn[standard]
-python-dotenv
-deepgram-sdk
-openai
-elevenlabs
-```
-
-4. **Set up environment variables:**
-Create a file named `.env` in the root of the project directory and add your API keys:
-
-```
-DEEPGRAM_API_KEY="YOUR_DEEPGRAM_API_KEY_HERE"
-OPENAI_API_KEY="YOUR_OPENAI_API_KEY_HERE"
-ELEVENLABS_API_KEY="YOUR_ELEVENLABS_API_KEY_HERE"
-```
-
-*Note: Your Python code must be configured to load these variables (e.g., using the `python-dotenv` library).*
-5. **Run the backend server:**
-
-```sh
+### 4️⃣ Run the FastAPI Server
+bash
 uvicorn main:app --reload
-```
-
-The server will start, typically on `http://127.0.0.1:8000`. The `--reload` flag automatically restarts the server when you make code changes.
-
-### Frontend
-
-The frontend is served directly by the FastAPI backend. No separate build step is required.
-
-## 💻 Usage
-
-1. Once the backend server is running, open your web browser and navigate to `http://127.0.0.1:8000`.
-2. The AI Voice Companion interface will load.
-3. Click the central "Record" button to start recording. Your browser will ask for microphone permission the first time.
-4. The visualizer will activate, showing that it's listening. Speak your question or command.
-5. Click the "Stop" button when you are finished.
-6. The application will process your audio. The AI's response will play back automatically, and the visualizer will activate again.
-7. The conversation text will appear on screen.
-
-## 📁 Project Structure
-
-```
-.
-├── main.py             # FastAPI application logic
-├── requirements.txt    # Python dependencies
-├── .env                # Environment variables (ignored by git)
-├── README.md           # This file
-└── static/
-    ├── index.html      # The main HTML file for the UI
-    ├── script.js       # All frontend JavaScript logic
-    └── styles.css      # All CSS for styling
-```
 
 
-## 📄 License
+## 🚀 Usage
 
-This project is licensed under the MIT License - see the `LICENSE` file for details.
+1. Start the FastAPI server as described above.
+2. Open http://localhost:8000 in the browser.
+3. Grant microphone access.
+4. Speak into your mic — your speech will be transcribed, processed by *Gemini, and played back with **Murf AI's* voice.
 
+
+## 🙌 Special Thanks
+
+Huge thanks to *Murf AI* for organizing this challenge and encouraging developers to explore the world of voice-first interfaces.  
+Your tools are enabling the next generation of interactive agents 💜
+
+## 📜 License
+
+This project is licensed under the *MIT License* — see the [LICENSE](LICENSE) file for details.
