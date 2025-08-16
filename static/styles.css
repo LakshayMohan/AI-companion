@@ -157,3 +157,20 @@ h4 {
     color: #bbb;
     text-transform: uppercase;
 }
+
+.stop-audio-button {
+    background: #ff4d4d;
+    color: white;
+    border: none;
+    padding: 10px 18px;
+    font-size: 1rem;
+    border-radius: 8px;
+    cursor: pointer;
+    box-shadow: 0 0 10px rgba(255, 77, 77, 0.4);
+    transition: background 0.3s ease, transform 0.2s ease;
+}
+
+.stop-audio-button:hover {
+    background: #e60000;
+    transform: scale(1.05);
+}

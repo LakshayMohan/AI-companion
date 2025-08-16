@@ -1,8 +1,8 @@
 # app.py
-
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware # NEW: Import CORS Middleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import os
@@ -10,10 +10,9 @@ import httpx
 import assemblyai as aai
 import google.generativeai as genai
 from collections import defaultdict
-import logging # NEW: Import logging library
+import logging
 
-# --- NEW: Basic Logging Configuration ---
-# In a production app, you would configure this more extensively (e.g., log to files).
+# Basic Logging Configuration
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Load environment variables
@@ -36,8 +35,18 @@ else:
 if not MURF_API_KEY:
     logging.warning("MURF_API_KEY is not set.")
 
-
 app = FastAPI()
+
+# --- NEW: Add CORS Middleware ---
+# This allows the frontend to make requests to the backend, including the new proxy.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, restrict this to your frontend's domain
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # In-Memory Chat History Store (for demo purposes)
 chat_history = defaultdict(list)
@@ -45,21 +54,42 @@ chat_history = defaultdict(list)
 # Mount static directory for frontend files
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+
 @app.get("/")
 def serve_index():
     return FileResponse("static/index.html")
+
+# --- NEW: Audio Proxy Endpoint ---
+# This endpoint fetches the audio from Murf's URL and streams it back to the client.
+# This avoids CORS errors in the browser when the frontend tries to analyze the audio data for visualization.
+@app.get("/proxy-audio/")
+async def proxy_audio(url: str):
+    async with httpx.AsyncClient() as client:
+        try:
+            r = await client.get(url)
+            r.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
+            
+            # Stream the response content
+            return StreamingResponse(
+                iter([r.content]),
+                media_type="audio/mpeg", # Murf typically provides MP3
+                headers={"Access-Control-Allow-Origin": "*"}
+            )
+        except httpx.RequestError as e:
+            logging.error(f"Failed to proxy audio from {e.request.url}: {e}")
+            raise HTTPException(status_code=502, detail="Could not fetch audio from the provider.")
+
 
 class TTSRequest(BaseModel):
     text: str
     voiceId: str = "en-US-natalie"
 
-# --- REFINED: Text-to-Speech Endpoint with Better Error Handling ---
 @app.post("/tts")
 async def generate_tts(request: TTSRequest):
     if not MURF_API_KEY:
         logging.error("TTS endpoint called but MURF_API_KEY is missing.")
         raise HTTPException(status_code=500, detail="TTS service is not configured on the server.")
-
+    
     headers = {"api-key": MURF_API_KEY, "Content-Type": "application/json"}
     payload = {"text": request.text, "voiceId": request.voiceId}
     
@@ -80,15 +110,13 @@ async def generate_tts(request: TTSRequest):
         logging.error(f"An unexpected error occurred in TTS generation: {e}")
         raise HTTPException(status_code=500, detail="An internal error occurred.")
 
-
-# --- NEW: Helper function for generating fallback audio ---
 async def generate_fallback_audio(error_message: str = "I'm sorry, I'm having trouble connecting right now. Please try again later."):
     """Generates a generic audio error message using Murf."""
     if not MURF_API_KEY:
-        return None # Cannot generate audio without the key
+        return None
     
     headers = {"api-key": MURF_API_KEY, "Content-Type": "application/json"}
-    payload = {"text": error_message, "voiceId": "en-US-marcus"} # Using a standard voice for errors
+    payload = {"text": error_message, "voiceId": "en-US-marcus"}
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             murf_resp = await client.post("https://api.murf.ai/v1/speech/generate", headers=headers, json=payload)
@@ -98,8 +126,6 @@ async def generate_fallback_audio(error_message: str = "I'm sorry, I'm having tr
         logging.error(f"Failed to generate fallback audio: {e}")
         return None
 
-
-# --- REBUILT: Conversational Agent with Robust, Step-by-Step Error Handling ---
 @app.post("/agent/chat/{session_id}")
 async def agent_chat(session_id: str, file: UploadFile = File(...)):
     # 1. Transcribe audio with AssemblyAI
@@ -108,10 +134,8 @@ async def agent_chat(session_id: str, file: UploadFile = File(...)):
             raise ValueError("AssemblyAI API key is not configured.")
         transcriber = aai.Transcriber()
         transcript = transcriber.transcribe(file.file)
-
         if transcript.error:
             raise RuntimeError(f"Transcription Error: {transcript.error}")
-
         user_text = (transcript.text or "").strip()
         if not user_text:
             return JSONResponse(status_code=400, content={"error": "No speech was detected in the audio. Please speak clearly and try again."})
@@ -122,17 +146,16 @@ async def agent_chat(session_id: str, file: UploadFile = File(...)):
         if fallback_audio_url:
             return JSONResponse(status_code=503, content={"error": "Could not process your audio.", "audio_url": fallback_audio_url})
         return JSONResponse(status_code=503, content={"error": "The speech-to-text service is unavailable."})
-
-    # Append user's message to history
+    
     chat_history[session_id].append({"role": "user", "parts": [user_text]})
-
+    
     # 2. Generate response with Gemini LLM
     try:
         if not GEMINI_API_KEY:
             raise ValueError("Gemini API key is not configured.")
             
         model = genai.GenerativeModel('gemini-1.5-flash')
-        conversation = model.start_chat(history=chat_history[session_id][:-1]) # Pass history without the latest user message
+        conversation = model.start_chat(history=chat_history[session_id][:-1])
         llm_response = conversation.send_message(user_text)
         
         llm_text = (llm_response.text or "").strip()
@@ -141,15 +164,14 @@ async def agent_chat(session_id: str, file: UploadFile = File(...)):
             
     except Exception as e:
         logging.error(f"Error during LLM generation: {e}")
-        chat_history[session_id].pop() # Remove the user message from history if LLM fails
-        fallback_audio_url = await generate_fallback_audio()
+        chat_history[session_id].pop()
+        fallback_audio_url = await generate_fallback_audio("The AI model is currently unavailable.")
         if fallback_audio_url:
             return JSONResponse(status_code=503, content={"error": "The AI model is currently unavailable.", "audio_url": fallback_audio_url, "transcription": user_text})
         return JSONResponse(status_code=503, content={"error": "The AI model service is unavailable."})
-
-    # Append LLM's response to history
+        
     chat_history[session_id].append({"role": "model", "parts": [llm_text]})
-
+    
     # 3. Generate TTS with Murf from LLM response
     try:
         if not MURF_API_KEY:
@@ -161,16 +183,13 @@ async def agent_chat(session_id: str, file: UploadFile = File(...)):
         
         async with httpx.AsyncClient(timeout=90) as client:
             murf_resp = await client.post("https://api.murf.ai/v1/speech/generate", headers=headers, json=payload)
-        murf_resp.raise_for_status()
-        audio_url = murf_resp.json().get("audioFile")
-
-        if not audio_url:
-            raise RuntimeError("Murf API returned no audio URL.")
-
+            murf_resp.raise_for_status()
+            audio_url = murf_resp.json().get("audioFile")
+            if not audio_url:
+                raise RuntimeError("Murf API returned no audio URL.")
+                
     except Exception as e:
         logging.error(f"Error during TTS generation for LLM response: {e}")
-        # We can't generate fallback audio here because the TTS service itself is failing.
-        # We return the text response so the user can at least read it.
         return JSONResponse(
             status_code=503,
             content={
@@ -179,11 +198,10 @@ async def agent_chat(session_id: str, file: UploadFile = File(...)):
                 "llm_response": llm_text
             }
         )
-
+        
     # 4. Return final successful result
     return {
         "audio_url": audio_url,
         "transcription": user_text,
         "llm_response": llm_text
     }
-
