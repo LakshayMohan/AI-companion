@@ -1,8 +1,8 @@
 # app.py
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware # NEW: Import CORS Middleware
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import os
@@ -11,6 +11,7 @@ import assemblyai as aai
 import google.generativeai as genai
 from collections import defaultdict
 import logging
+import uuid # NEW: For generating unique filenames
 
 # Basic Logging Configuration
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -37,48 +38,76 @@ if not MURF_API_KEY:
 
 app = FastAPI()
 
-# --- NEW: Add CORS Middleware ---
-# This allows the frontend to make requests to the backend, including the new proxy.
+# --- CORS Middleware ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, restrict this to your frontend's domain
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
-# In-Memory Chat History Store (for demo purposes)
+# --- In-Memory Store and Static Files ---
 chat_history = defaultdict(list)
-
-# Mount static directory for frontend files
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# NEW: Create a directory for storing recordings if it doesn't exist
+RECORDINGS_DIR = "recordings"
+os.makedirs(RECORDINGS_DIR, exist_ok=True)
 
 
 @app.get("/")
 def serve_index():
     return FileResponse("static/index.html")
 
-# --- NEW: Audio Proxy Endpoint ---
-# This endpoint fetches the audio from Murf's URL and streams it back to the client.
-# This avoids CORS errors in the browser when the frontend tries to analyze the audio data for visualization.
+# --- NEW: WebSocket Endpoint for Audio Streaming ---
+# This endpoint handles the real-time streaming of audio from the client.
+@app.websocket("/ws/audio/{session_id}")
+async def websocket_audio_endpoint(websocket: WebSocket, session_id: str):
+    await websocket.accept()
+    
+    # Generate a unique, secure filename for the recording
+    # Using UUID prevents filename conflicts and path traversal attacks.
+    safe_filename = f"recording_{session_id}_{uuid.uuid4()}.webm"
+    file_path = os.path.join(RECORDINGS_DIR, safe_filename)
+
+    logging.info(f"Client '{session_id}' connected. Saving audio to '{file_path}'")
+    
+    try:
+        # Open the file in binary write mode
+        with open(file_path, "wb") as audio_file:
+            # Loop to receive audio chunks from the client
+            while True:
+                data = await websocket.receive_bytes()
+                audio_file.write(data)
+    except WebSocketDisconnect:
+        logging.info(f"Client '{session_id}' disconnected. Audio stream saved successfully to '{file_path}'.")
+    except Exception as e:
+        logging.error(f"An error occurred for client '{session_id}': {e}")
+        # Clean up the partial file in case of an error
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            logging.info(f"Removed partial file '{file_path}' due to error.")
+    # Note: For production, you might add limits on file size or stream duration
+    # to prevent resource exhaustion from malicious clients.
+
+
+# --- Existing Endpoints (Remain for potential future use) ---
+
 @app.get("/proxy-audio/")
 async def proxy_audio(url: str):
     async with httpx.AsyncClient() as client:
         try:
             r = await client.get(url)
-            r.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
-            
-            # Stream the response content
+            r.raise_for_status() 
             return StreamingResponse(
                 iter([r.content]),
-                media_type="audio/mpeg", # Murf typically provides MP3
+                media_type="audio/mpeg", 
                 headers={"Access-Control-Allow-Origin": "*"}
             )
         except httpx.RequestError as e:
             logging.error(f"Failed to proxy audio from {e.request.url}: {e}")
             raise HTTPException(status_code=502, detail="Could not fetch audio from the provider.")
-
 
 class TTSRequest(BaseModel):
     text: str
@@ -111,7 +140,6 @@ async def generate_tts(request: TTSRequest):
         raise HTTPException(status_code=500, detail="An internal error occurred.")
 
 async def generate_fallback_audio(error_message: str = "I'm sorry, I'm having trouble connecting right now. Please try again later."):
-    """Generates a generic audio error message using Murf."""
     if not MURF_API_KEY:
         return None
     

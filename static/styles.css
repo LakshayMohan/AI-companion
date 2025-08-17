@@ -169,8 +169,8 @@ h4 {
     box-shadow: 0 0 10px rgba(255, 77, 77, 0.4);
     transition: background 0.3s ease, transform 0.2s ease;
 }
-
 .stop-audio-button:hover {
     background: #e60000;
     transform: scale(1.05);
 }
+
