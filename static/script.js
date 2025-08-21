@@ -202,7 +202,7 @@ document.addEventListener('DOMContentLoaded', () => {
             disconnectRecording();
             disconnectWebSocket();
             updateUIRecording(false);
-            statusDisplay.textContent = "Recording stopped. Audio saved to server.";
+            statusDisplay.textContent = "Recording stopped. Ready to Start Again.";
         }
     }
 
