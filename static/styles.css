@@ -209,6 +209,29 @@ h4 {
     background: rgba(255, 102, 102, 0.1);
 }
 
+.transcription-status {
+    font-size: 0.9rem;
+    color: #888;
+    margin: 10px 0;
+    padding: 8px 12px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    transition: all 0.3s ease;
+}
+
+.transcription-status.active {
+    color: #00ff88;
+    border-color: #00ff88;
+    background: rgba(0, 255, 136, 0.1);
+}
+
+.transcription-status.error {
+    color: #ff6666;
+    border-color: #ff6666;
+    background: rgba(255, 102, 102, 0.1);
+}
+
 .test-button {
     background: #9966ff;
     color: white;

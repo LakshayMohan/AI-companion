@@ -12,6 +12,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const llmResponseOutput = document.getElementById("llmResponseOutput");
     const stopAudioBtn = document.getElementById('stopAudioBtn');
     const websocketStatus = document.getElementById('websocket-status');
+    const transcriptionStatus = document.getElementById('transcription-status');
     const testRecordingsBtn = document.getElementById('testRecordingsBtn');
 
     // --- State & Audio Variables ---
@@ -48,6 +49,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.log('WebSocket connected for audio streaming');
                 websocketStatus.textContent = "WebSocket: Connected";
                 websocketStatus.className = "websocket-status connected";
+                transcriptionStatus.textContent = "Transcription: Active";
+                transcriptionStatus.className = "transcription-status active";
                 statusDisplay.textContent = "WebSocket connected. Ready to record.";
             };
             
@@ -67,6 +70,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.log('WebSocket disconnected');
                 websocketStatus.textContent = "WebSocket: Disconnected";
                 websocketStatus.className = "websocket-status";
+                transcriptionStatus.textContent = "Transcription: Inactive";
+                transcriptionStatus.className = "transcription-status";
                 websocket = null;
             };
             
@@ -152,11 +157,11 @@ document.addEventListener('DOMContentLoaded', () => {
             // Connect WebSocket first
             await connectWebSocket();
             
-            // Get microphone stream
+            // Get microphone stream with 16kHz sample rate for AssemblyAI
             stream = await navigator.mediaDevices.getUserMedia({ 
                 audio: {
-                    sampleRate: 44100,
-                    channelCount: 1,
+                    sampleRate: 16000,  // 16kHz for AssemblyAI
+                    channelCount: 1,    // Mono
                     echoCancellation: true,
                     noiseSuppression: true
                 } 
@@ -167,15 +172,18 @@ document.addEventListener('DOMContentLoaded', () => {
             microphoneSource.connect(micAnalyser);    // Do not connect to speakers!
             
             // Create script processor for real-time audio processing
-            processor = audioContext.createScriptProcessor(4096, 1, 1);
+            // Buffer size should be appropriate for 16kHz
+            processor = audioContext.createScriptProcessor(2048, 1, 1);
             
             processor.onaudioprocess = (event) => {
                 if (websocket && websocket.readyState === WebSocket.OPEN) {
                     const inputData = event.inputBuffer.getChannelData(0);
                     
                     // Convert float32 to int16 for smaller data size
+                    // AssemblyAI expects 16-bit PCM data
                     const int16Data = new Int16Array(inputData.length);
                     for (let i = 0; i < inputData.length; i++) {
+                        // Convert float32 (-1 to 1) to int16 (-32768 to 32767)
                         int16Data[i] = Math.max(-32768, Math.min(32767, inputData[i] * 32768));
                     }
                     

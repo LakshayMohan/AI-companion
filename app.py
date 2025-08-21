@@ -80,24 +80,45 @@ async def list_recordings():
         logging.error(f"Error listing recordings: {e}")
         raise HTTPException(status_code=500, detail="Error listing recordings")
 
-# --- WebSocket Audio Recording ---
+# --- WebSocket Audio Recording with AssemblyAI Real-time Transcription ---
 class AudioRecorder:
     def __init__(self):
         self.active_recordings = {}
+        self.transcribers = {}  # Store AssemblyAI transcribers per session
     
     async def start_recording(self, session_id: str):
-        """Start a new audio recording session"""
+        """Start a new audio recording session with AssemblyAI transcription"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"recordings/audio_{session_id}_{timestamp}.wav"
         
         # Ensure recordings directory exists
         os.makedirs("recordings", exist_ok=True)
         
-        # Create WAV file with proper headers
+        # Create WAV file with proper headers for AssemblyAI (16kHz, 16-bit, mono)
         with wave.open(filename, 'wb') as wav_file:
             wav_file.setnchannels(1)  # Mono
             wav_file.setsampwidth(2)  # 16-bit
-            wav_file.setframerate(44100)  # 44.1kHz
+            wav_file.setframerate(16000)  # 16kHz for AssemblyAI
+        
+        # Initialize AssemblyAI real-time transcriber
+        try:
+            if ASSEMBLYAI_API_KEY:
+                transcriber = aai.RealtimeTranscriber(
+                    sample_rate=16000,
+                    on_data=self._on_transcription_data,
+                    on_error=self._on_transcription_error,
+                    on_open=self._on_transcription_open,
+                    on_close=self._on_transcription_close
+                )
+                transcriber.connect()
+                self.transcribers[session_id] = transcriber
+                logging.info(f"AssemblyAI transcriber started for session: {session_id}")
+            else:
+                logging.warning("AssemblyAI API key not set. Transcription disabled.")
+                self.transcribers[session_id] = None
+        except Exception as e:
+            logging.error(f"Failed to initialize AssemblyAI transcriber: {e}")
+            self.transcribers[session_id] = None
         
         self.active_recordings[session_id] = {
             'filename': filename,
@@ -107,14 +128,43 @@ class AudioRecorder:
         logging.info(f"Started recording session {session_id} -> {filename}")
         return filename
     
+    def _on_transcription_data(self, transcript):
+        """Callback for AssemblyAI transcription data"""
+        if transcript.text:
+            print(f"🎤 TRANSCRIPTION: {transcript.text}")
+            logging.info(f"Transcription: {transcript.text}")
+    
+    def _on_transcription_error(self, error):
+        """Callback for AssemblyAI transcription errors"""
+        print(f"❌ TRANSCRIPTION ERROR: {error}")
+        logging.error(f"AssemblyAI transcription error: {error}")
+    
+    def _on_transcription_open(self, transcript):
+        """Callback when AssemblyAI connection opens"""
+        print("🔗 AssemblyAI transcription connection opened")
+        logging.info("AssemblyAI transcription connection opened")
+    
+    def _on_transcription_close(self, transcript):
+        """Callback when AssemblyAI connection closes"""
+        print("🔌 AssemblyAI transcription connection closed")
+        logging.info("AssemblyAI transcription connection closed")
+    
     async def add_audio_data(self, session_id: str, audio_data: bytes):
-        """Add audio data to the current recording"""
+        """Add audio data to the current recording and send to AssemblyAI"""
         if session_id not in self.active_recordings:
             logging.warning(f"Received audio data for unknown session: {session_id}")
             return
         
         recording = self.active_recordings[session_id]
         recording['data_chunks'].append(audio_data)
+        
+        # Send audio data to AssemblyAI for real-time transcription
+        if session_id in self.transcribers and self.transcribers[session_id]:
+            try:
+                self.transcribers[session_id].stream(audio_data)
+            except Exception as e:
+                logging.error(f"Error streaming audio to AssemblyAI: {e}")
+        
         logging.debug(f"Added {len(audio_data)} bytes to session {session_id}")
     
     async def stop_recording(self, session_id: str):
@@ -126,12 +176,22 @@ class AudioRecorder:
         recording = self.active_recordings[session_id]
         filename = recording['filename']
         
+        # Close AssemblyAI transcriber
+        if session_id in self.transcribers and self.transcribers[session_id]:
+            try:
+                self.transcribers[session_id].disconnect()
+                print("🔌 AssemblyAI transcription stopped")
+            except Exception as e:
+                logging.error(f"Error closing AssemblyAI transcriber: {e}")
+            finally:
+                del self.transcribers[session_id]
+        
         # Combine all audio chunks and write to file
         try:
             with wave.open(filename, 'wb') as wav_file:
                 wav_file.setnchannels(1)  # Mono
                 wav_file.setsampwidth(2)  # 16-bit
-                wav_file.setframerate(44100)  # 44.1kHz
+                wav_file.setframerate(16000)  # 16kHz for AssemblyAI
                 
                 # Write all audio data
                 for chunk in recording['data_chunks']:
