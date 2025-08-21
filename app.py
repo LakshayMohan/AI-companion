@@ -51,167 +51,128 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # --- Session Chat Memory ---
 chat_history = defaultdict(list)
 
-# --- Test endpoint to list recordings ---
-@app.get("/recordings")
-async def list_recordings():
-    """List all saved audio recordings"""
-    try:
-        recordings_dir = "recordings"
-        if not os.path.exists(recordings_dir):
-            return {"recordings": [], "message": "No recordings directory found"}
-        
-        recordings = []
-        for filename in os.listdir(recordings_dir):
-            if filename.endswith('.wav'):
-                filepath = os.path.join(recordings_dir, filename)
-                file_size = os.path.getsize(filepath)
-                recordings.append({
-                    "filename": filename,
-                    "size_bytes": file_size,
-                    "size_mb": round(file_size / (1024 * 1024), 2)
-                })
-        
-        return {
-            "recordings": recordings,
-            "count": len(recordings),
-            "message": f"Found {len(recordings)} recordings"
-        }
-    except Exception as e:
-        logging.error(f"Error listing recordings: {e}")
-        raise HTTPException(status_code=500, detail="Error listing recordings")
 
-# --- WebSocket Audio Recording with AssemblyAI Real-time Transcription ---
-class AudioRecorder:
+
+# --- WebSocket Audio Streaming with AssemblyAI Universal Streaming (No Recording) ---
+class AudioStreamer:
     def __init__(self):
-        self.active_recordings = {}
-        self.transcribers = {}  # Store AssemblyAI transcribers per session
+        self.active_sessions = {}
+        self.streaming_clients = {}  # Store AssemblyAI streaming clients per session
     
-    async def start_recording(self, session_id: str):
-        """Start a new audio recording session with AssemblyAI transcription"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"recordings/audio_{session_id}_{timestamp}.wav"
+    async def start_streaming(self, session_id: str):
+        """Start a new audio streaming session with AssemblyAI transcription (no recording)"""
         
-        # Ensure recordings directory exists
-        os.makedirs("recordings", exist_ok=True)
-        
-        # Create WAV file with proper headers for AssemblyAI (16kHz, 16-bit, mono)
-        with wave.open(filename, 'wb') as wav_file:
-            wav_file.setnchannels(1)  # Mono
-            wav_file.setsampwidth(2)  # 16-bit
-            wav_file.setframerate(16000)  # 16kHz for AssemblyAI
-        
-        # Initialize AssemblyAI real-time transcriber
+        # Initialize AssemblyAI Universal Streaming client
         try:
             if ASSEMBLYAI_API_KEY:
-                transcriber = aai.RealtimeTranscriber(
-                    sample_rate=16000,
-                    on_data=self._on_transcription_data,
-                    on_error=self._on_transcription_error,
-                    on_open=self._on_transcription_open,
-                    on_close=self._on_transcription_close
+                from assemblyai.streaming.v3 import (
+                    BeginEvent,
+                    StreamingClient,
+                    StreamingClientOptions,
+                    StreamingError,
+                    StreamingEvents,
+                    StreamingParameters,
+                    StreamingSessionParameters,
+                    TerminationEvent,
+                    TurnEvent,
                 )
-                transcriber.connect()
-                self.transcribers[session_id] = transcriber
-                logging.info(f"AssemblyAI transcriber started for session: {session_id}")
+                
+                def on_begin(client_instance, event: BeginEvent):
+                    print(f"🔗 AssemblyAI session started: {event.id}")
+                    logging.info(f"AssemblyAI session started: {event.id}")
+                
+                def on_turn(client_instance, event: TurnEvent):
+                    if event.transcript:
+                        print(f"🎤 TRANSCRIPTION: {event.transcript}")
+                        logging.info(f"Transcription: {event.transcript}")
+                
+                def on_terminated(client_instance, event: TerminationEvent):
+                    print(f"🔌 AssemblyAI session terminated: {event.audio_duration_seconds} seconds processed")
+                    logging.info(f"AssemblyAI session terminated: {event.audio_duration_seconds} seconds")
+                
+                def on_error(client_instance, error: StreamingError):
+                    print(f"❌ TRANSCRIPTION ERROR: {error}")
+                    logging.error(f"AssemblyAI error: {error}")
+                
+                client = StreamingClient(
+                    StreamingClientOptions(
+                        api_key=ASSEMBLYAI_API_KEY,
+                        api_host="streaming.assemblyai.com",
+                    )
+                )
+                
+                client.on(StreamingEvents.Begin, on_begin)
+                client.on(StreamingEvents.Turn, on_turn)
+                client.on(StreamingEvents.Termination, on_terminated)
+                client.on(StreamingEvents.Error, on_error)
+                
+                client.connect(
+                    StreamingParameters(
+                        sample_rate=16000,
+                        format_turns=True,
+                    )
+                )
+                
+                self.streaming_clients[session_id] = client
+                logging.info(f"AssemblyAI Universal Streaming client started for session: {session_id}")
             else:
                 logging.warning("AssemblyAI API key not set. Transcription disabled.")
-                self.transcribers[session_id] = None
+                self.streaming_clients[session_id] = None
         except Exception as e:
-            logging.error(f"Failed to initialize AssemblyAI transcriber: {e}")
-            self.transcribers[session_id] = None
+            logging.error(f"Failed to initialize AssemblyAI Universal Streaming client: {e}")
+            self.streaming_clients[session_id] = None
         
-        self.active_recordings[session_id] = {
-            'filename': filename,
-            'start_time': time.time(),
-            'data_chunks': []
+        self.active_sessions[session_id] = {
+            'start_time': time.time()
         }
-        logging.info(f"Started recording session {session_id} -> {filename}")
-        return filename
+        logging.info(f"Started streaming session {session_id}")
+        return session_id
     
-    def _on_transcription_data(self, transcript):
-        """Callback for AssemblyAI transcription data"""
-        if transcript.text:
-            print(f"🎤 TRANSCRIPTION: {transcript.text}")
-            logging.info(f"Transcription: {transcript.text}")
+
     
-    def _on_transcription_error(self, error):
-        """Callback for AssemblyAI transcription errors"""
-        print(f"❌ TRANSCRIPTION ERROR: {error}")
-        logging.error(f"AssemblyAI transcription error: {error}")
-    
-    def _on_transcription_open(self, transcript):
-        """Callback when AssemblyAI connection opens"""
-        print("🔗 AssemblyAI transcription connection opened")
-        logging.info("AssemblyAI transcription connection opened")
-    
-    def _on_transcription_close(self, transcript):
-        """Callback when AssemblyAI connection closes"""
-        print("🔌 AssemblyAI transcription connection closed")
-        logging.info("AssemblyAI transcription connection closed")
-    
-    async def add_audio_data(self, session_id: str, audio_data: bytes):
-        """Add audio data to the current recording and send to AssemblyAI"""
-        if session_id not in self.active_recordings:
+    async def stream_audio_data(self, session_id: str, audio_data: bytes):
+        """Stream audio data to AssemblyAI for real-time transcription (no recording)"""
+        if session_id not in self.active_sessions:
             logging.warning(f"Received audio data for unknown session: {session_id}")
             return
         
-        recording = self.active_recordings[session_id]
-        recording['data_chunks'].append(audio_data)
-        
         # Send audio data to AssemblyAI for real-time transcription
-        if session_id in self.transcribers and self.transcribers[session_id]:
+        if session_id in self.streaming_clients and self.streaming_clients[session_id]:
             try:
-                self.transcribers[session_id].stream(audio_data)
+                # AssemblyAI expects raw PCM audio data
+                self.streaming_clients[session_id].stream(audio_data)
             except Exception as e:
                 logging.error(f"Error streaming audio to AssemblyAI: {e}")
         
-        logging.debug(f"Added {len(audio_data)} bytes to session {session_id}")
+        logging.debug(f"Streamed {len(audio_data)} bytes to session {session_id}")
     
-    async def stop_recording(self, session_id: str):
-        """Stop recording and save the complete audio file"""
-        if session_id not in self.active_recordings:
-            logging.warning(f"Attempted to stop unknown recording session: {session_id}")
+    async def stop_streaming(self, session_id: str):
+        """Stop streaming session (no recording)"""
+        if session_id not in self.active_sessions:
+            logging.warning(f"Attempted to stop unknown streaming session: {session_id}")
             return None
         
-        recording = self.active_recordings[session_id]
-        filename = recording['filename']
+        session = self.active_sessions[session_id]
         
-        # Close AssemblyAI transcriber
-        if session_id in self.transcribers and self.transcribers[session_id]:
+        # Close AssemblyAI Universal Streaming client
+        if session_id in self.streaming_clients and self.streaming_clients[session_id]:
             try:
-                self.transcribers[session_id].disconnect()
-                print("🔌 AssemblyAI transcription stopped")
+                self.streaming_clients[session_id].disconnect(terminate=True)
+                print("🔌 AssemblyAI Universal Streaming client disconnected")
             except Exception as e:
-                logging.error(f"Error closing AssemblyAI transcriber: {e}")
+                logging.error(f"Error disconnecting AssemblyAI Universal Streaming client: {e}")
             finally:
-                del self.transcribers[session_id]
+                del self.streaming_clients[session_id]
         
-        # Combine all audio chunks and write to file
-        try:
-            with wave.open(filename, 'wb') as wav_file:
-                wav_file.setnchannels(1)  # Mono
-                wav_file.setsampwidth(2)  # 16-bit
-                wav_file.setframerate(16000)  # 16kHz for AssemblyAI
-                
-                # Write all audio data
-                for chunk in recording['data_chunks']:
-                    wav_file.writeframes(chunk)
-            
-            duration = time.time() - recording['start_time']
-            logging.info(f"Stopped recording session {session_id} -> {filename} (duration: {duration:.2f}s)")
-            
-            # Clean up
-            del self.active_recordings[session_id]
-            return filename
-            
-        except Exception as e:
-            logging.error(f"Error saving audio file for session {session_id}: {e}")
-            if session_id in self.active_recordings:
-                del self.active_recordings[session_id]
-            return None
+        duration = time.time() - session['start_time']
+        logging.info(f"Stopped streaming session {session_id} (duration: {duration:.2f}s)")
+        
+        # Clean up
+        del self.active_sessions[session_id]
+        return session_id
 
-# Global audio recorder instance
-audio_recorder = AudioRecorder()
+# Global audio streamer instance
+audio_streamer = AudioStreamer()
 
 @app.websocket("/ws/audio/{session_id}")
 async def websocket_audio_endpoint(websocket: WebSocket, session_id: str):
@@ -219,30 +180,28 @@ async def websocket_audio_endpoint(websocket: WebSocket, session_id: str):
     logging.info(f"WebSocket connection established for session: {session_id}")
     
     try:
-        # Start recording
-        filename = await audio_recorder.start_recording(session_id)
-        await websocket.send_text(f"Recording started: {filename}")
+        # Start streaming (no recording)
+        session_id = await audio_streamer.start_streaming(session_id)
+        await websocket.send_text(f"Streaming started: {session_id}")
         
         while True:
             # Receive audio data from client
             data = await websocket.receive_bytes()
             
-            # Add audio data to recording
-            await audio_recorder.add_audio_data(session_id, data)
+            # Stream audio data to AssemblyAI (no recording)
+            await audio_streamer.stream_audio_data(session_id, data)
             
             # Send acknowledgment
-            await websocket.send_text("Audio data received")
+            await websocket.send_text("Audio data streamed")
             
     except WebSocketDisconnect:
         logging.info(f"WebSocket disconnected for session: {session_id}")
-        # Stop recording when client disconnects
-        final_filename = await audio_recorder.stop_recording(session_id)
-        if final_filename:
-            logging.info(f"Recording saved: {final_filename}")
+        # Stop streaming when client disconnects
+        await audio_streamer.stop_streaming(session_id)
     except Exception as e:
         logging.error(f"WebSocket error for session {session_id}: {e}")
-        # Clean up recording on error
-        await audio_recorder.stop_recording(session_id)
+        # Clean up streaming on error
+        await audio_streamer.stop_streaming(session_id)
 
 @app.get("/")
 def serve_index():

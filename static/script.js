@@ -13,7 +13,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const stopAudioBtn = document.getElementById('stopAudioBtn');
     const websocketStatus = document.getElementById('websocket-status');
     const transcriptionStatus = document.getElementById('transcription-status');
-    const testRecordingsBtn = document.getElementById('testRecordingsBtn');
+
 
     // --- State & Audio Variables ---
     let mediaRecorder, audioChunks = [], sessionId = null, isRecording = false;
@@ -23,7 +23,9 @@ document.addEventListener('DOMContentLoaded', () => {
     let stream = null;
     
     // --- Audio Contexts and Analyser Nodes ---
-    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)({
+        sampleRate: 16000  // Set to 16kHz for AssemblyAI compatibility
+    });
     const micAnalyser = audioContext.createAnalyser();
     const playbackAnalyser = audioContext.createAnalyser();
     micAnalyser.fftSize = 256;
@@ -105,28 +107,7 @@ document.addEventListener('DOMContentLoaded', () => {
         disconnectPlayback();
     });
 
-    testRecordingsBtn.addEventListener('click', async () => {
-        try {
-            const response = await fetch('/recordings');
-            const data = await response.json();
-            
-            if (response.ok) {
-                const recordingsList = data.recordings.map(rec => 
-                    `${rec.filename} (${rec.size_mb} MB)`
-                ).join('\n');
-                
-                statusDisplay.textContent = `Found ${data.count} recordings`;
-                alert(`Recordings:\n${recordingsList || 'No recordings found'}`);
-            } else {
-                statusDisplay.textContent = "Error fetching recordings";
-                statusDisplay.classList.add('error');
-            }
-        } catch (error) {
-            console.error('Error checking recordings:', error);
-            statusDisplay.textContent = "Failed to check recordings";
-            statusDisplay.classList.add('error');
-        }
-    });
+
 
     function disconnectRecording() {
         if (microphoneSource) {
@@ -160,8 +141,8 @@ document.addEventListener('DOMContentLoaded', () => {
             // Get microphone stream with 16kHz sample rate for AssemblyAI
             stream = await navigator.mediaDevices.getUserMedia({ 
                 audio: {
-                    sampleRate: 16000,  // 16kHz for AssemblyAI
-                    channelCount: 1,    // Mono
+                    sampleRate: { ideal: 16000, exact: 16000 },  // Force 16kHz
+                    channelCount: { ideal: 1, exact: 1 },        // Force mono
                     echoCancellation: true,
                     noiseSuppression: true
                 } 
