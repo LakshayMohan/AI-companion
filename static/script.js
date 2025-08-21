@@ -5,59 +5,192 @@ document.addEventListener('DOMContentLoaded', () => {
     const recordBtnText = document.getElementById('recordBtnText');
     const statusDisplay = document.getElementById("status");
     const responseAudio = document.getElementById("responseAudio");
-    const audioVisualizer = document.getElementById('audioVisualizer'); // Canvas is still here but used as ring
+    const audioVisualizer = document.getElementById('audioVisualizer');
     const transcriptionContainer = document.getElementById("transcription-container");
     const transcriptionOutput = document.getElementById("transcriptionOutput");
     const llmResponseContainer = document.getElementById("llm-response-container");
     const llmResponseOutput = document.getElementById("llmResponseOutput");
+    const stopAudioBtn = document.getElementById('stopAudioBtn');
+    const websocketStatus = document.getElementById('websocket-status');
+    const testRecordingsBtn = document.getElementById('testRecordingsBtn');
 
     // --- State & Audio Variables ---
     let mediaRecorder, audioChunks = [], sessionId = null, isRecording = false;
-    let microphoneSource, animationId, sourceNode;
+    let microphoneSource = null, animationId = null;
+    let websocket = null;
+    let processor = null;
+    let stream = null;
     
-    // --- Audio Context & Analyser ---
+    // --- Audio Contexts and Analyser Nodes ---
     const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    const analyser = audioContext.createAnalyser();
-    analyser.fftSize = 256; // smoother pulse
+    const micAnalyser = audioContext.createAnalyser();
+    const playbackAnalyser = audioContext.createAnalyser();
+    micAnalyser.fftSize = 256;
+    playbackAnalyser.fftSize = 256;
+    const responseSourceNode = audioContext.createMediaElementSource(responseAudio);
 
     // --- Session Management ---
     window.onload = () => {
         const params = new URLSearchParams(window.location.search);
         sessionId = params.get('session_id') || `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        const newUrl = `${window.location.pathname}?session_id=${sessionId}`;
-        window.history.replaceState({ path: newUrl }, '', newUrl);
+        window.history.replaceState({ path: `${window.location.pathname}?session_id=${sessionId}` }, '', `${window.location.pathname}?session_id=${sessionId}`);
     };
+
+    // --- WebSocket Audio Streaming ---
+    async function connectWebSocket() {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/ws/audio/${sessionId}`;
+        
+        try {
+            websocket = new WebSocket(wsUrl);
+            
+            websocket.onopen = () => {
+                console.log('WebSocket connected for audio streaming');
+                websocketStatus.textContent = "WebSocket: Connected";
+                websocketStatus.className = "websocket-status connected";
+                statusDisplay.textContent = "WebSocket connected. Ready to record.";
+            };
+            
+            websocket.onmessage = (event) => {
+                console.log('Server message:', event.data);
+            };
+            
+            websocket.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                websocketStatus.textContent = "WebSocket: Error";
+                websocketStatus.className = "websocket-status error";
+                statusDisplay.textContent = "WebSocket connection error.";
+                statusDisplay.classList.add('error');
+            };
+            
+            websocket.onclose = () => {
+                console.log('WebSocket disconnected');
+                websocketStatus.textContent = "WebSocket: Disconnected";
+                websocketStatus.className = "websocket-status";
+                websocket = null;
+            };
+            
+        } catch (error) {
+            console.error('Failed to connect WebSocket:', error);
+            statusDisplay.textContent = "Failed to connect WebSocket.";
+            statusDisplay.classList.add('error');
+        }
+    }
+
+    function disconnectWebSocket() {
+        if (websocket) {
+            websocket.close();
+            websocket = null;
+        }
+    }
 
     // --- Record Button ---
     recordBtn.addEventListener('click', () => {
-        audioContext.resume(); // Ensure context is active
-        if (isRecording) {
-            stopRecording();
-        } else {
-            startRecording();
+        audioContext.resume();
+        if (isRecording) stopRecording();
+        else startRecording();
+    });
+    
+    stopAudioBtn.addEventListener('click', () => {
+        responseAudio.pause();
+        responseAudio.currentTime = 0;
+        stopPulseEffect();
+        statusDisplay.textContent = "Playback stopped.";
+        stopAudioBtn.style.display = 'none';
+        disconnectPlayback();
+    });
+
+    testRecordingsBtn.addEventListener('click', async () => {
+        try {
+            const response = await fetch('/recordings');
+            const data = await response.json();
+            
+            if (response.ok) {
+                const recordingsList = data.recordings.map(rec => 
+                    `${rec.filename} (${rec.size_mb} MB)`
+                ).join('\n');
+                
+                statusDisplay.textContent = `Found ${data.count} recordings`;
+                alert(`Recordings:\n${recordingsList || 'No recordings found'}`);
+            } else {
+                statusDisplay.textContent = "Error fetching recordings";
+                statusDisplay.classList.add('error');
+            }
+        } catch (error) {
+            console.error('Error checking recordings:', error);
+            statusDisplay.textContent = "Failed to check recordings";
+            statusDisplay.classList.add('error');
         }
     });
 
+    function disconnectRecording() {
+        if (microphoneSource) {
+            microphoneSource.disconnect();
+            microphoneSource = null;
+        }
+        if (processor) {
+            processor.disconnect();
+            processor = null;
+        }
+        if (stream) {
+            stream.getTracks().forEach(track => track.stop());
+            stream = null;
+        }
+        micAnalyser.disconnect();
+    }
+
+    function disconnectPlayback() {
+        responseSourceNode.disconnect();
+        playbackAnalyser.disconnect();
+    }
+
     async function startRecording() {
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            disconnectPlayback(); // Ensure playback path is torn down
+            disconnectRecording(); // Ensure previous recording path is gone
+
+            // Connect WebSocket first
+            await connectWebSocket();
+            
+            // Get microphone stream
+            stream = await navigator.mediaDevices.getUserMedia({ 
+                audio: {
+                    sampleRate: 44100,
+                    channelCount: 1,
+                    echoCancellation: true,
+                    noiseSuppression: true
+                } 
+            });
+            
             resetUIState();
-            
             microphoneSource = audioContext.createMediaStreamSource(stream);
-            microphoneSource.connect(analyser);
+            microphoneSource.connect(micAnalyser);    // Do not connect to speakers!
             
-            startPulseEffect(); // <-- Use pulse effect instead of waveform
+            // Create script processor for real-time audio processing
+            processor = audioContext.createScriptProcessor(4096, 1, 1);
             
-            mediaRecorder = new MediaRecorder(stream);
-            audioChunks = [];
-            mediaRecorder.ondataavailable = event => audioChunks.push(event.data);
-            mediaRecorder.onstop = () => {
-                stream.getTracks().forEach(track => track.stop());
-                processAudio();
+            processor.onaudioprocess = (event) => {
+                if (websocket && websocket.readyState === WebSocket.OPEN) {
+                    const inputData = event.inputBuffer.getChannelData(0);
+                    
+                    // Convert float32 to int16 for smaller data size
+                    const int16Data = new Int16Array(inputData.length);
+                    for (let i = 0; i < inputData.length; i++) {
+                        int16Data[i] = Math.max(-32768, Math.min(32767, inputData[i] * 32768));
+                    }
+                    
+                    // Send audio data via WebSocket
+                    websocket.send(int16Data.buffer);
+                }
             };
-            mediaRecorder.start();
+            
+            microphoneSource.connect(processor);
+            processor.connect(audioContext.destination);
+            
+            startPulseEffect('recording');
             isRecording = true;
             updateUIRecording(true);
+            
         } catch (error) {
             console.error("Microphone access error:", error);
             statusDisplay.textContent = "Microphone access denied.";
@@ -66,23 +199,23 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function stopRecording() {
-        if (mediaRecorder && mediaRecorder.state !== "inactive") {
-            mediaRecorder.stop();
+        if (isRecording) {
+            isRecording = false;
             stopPulseEffect();
-            if (microphoneSource) {
-                microphoneSource.disconnect();
-                microphoneSource = null;
-            }
+            disconnectRecording();
+            disconnectWebSocket();
+            updateUIRecording(false);
+            statusDisplay.textContent = "Recording stopped. Audio saved to server.";
         }
     }
 
+    // --- Legacy processAudio function (kept for compatibility) ---
     async function processAudio() {
-        isRecording = false;
-        updateUIRecording(false);
         statusDisplay.textContent = "Processing audio...";
+        disconnectRecording();
         const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
         if (audioBlob.size < 1000) {
-            statusDisplay.textContent = "Recording too short.";
+            statusDisplay.textContent = "Recording too short. Please try again.";
             statusDisplay.classList.add('error');
             return;
         }
@@ -91,13 +224,8 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const response = await fetch(`/agent/chat/${sessionId}`, { method: "POST", body: formData });
             const data = await response.json();
-            
-            if (!response.ok) {
-                throw data;
-            }
-            
+            if (!response.ok) throw data;
             updateTextOutputs(data.transcription, data.llm_response);
-            
             if (data.audio_url) {
                 statusDisplay.textContent = "Response received!";
                 await playResponseAudio(data.audio_url);
@@ -105,12 +233,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 throw new Error("Response received, but audio link is missing.");
             }
         } catch (error) {
-            const errorMessage = error.error || "An unexpected error occurred.";
+            const errorMessage = error.error || "Unexpected error.";
             statusDisplay.textContent = errorMessage;
             statusDisplay.classList.add('error');
-            
             updateTextOutputs(error.transcription, error.llm_response);
-            
             if (error.audio_url) {
                 await playResponseAudio(error.audio_url, true);
             }
@@ -119,57 +245,43 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function playResponseAudio(audioUrl, isErrorMessage = false) {
         try {
-            if (audioContext.state === 'suspended') {
-                await audioContext.resume();
-            }
-            stopPulseEffect();
+            await audioContext.resume();
+            responseSourceNode.connect(playbackAnalyser);
+            playbackAnalyser.connect(audioContext.destination);
 
-            const proxiedUrl = `/proxy-audio/?url=${encodeURIComponent(audioUrl)}`;
-            responseAudio.src = proxiedUrl;
+            responseAudio.src = `/proxy-audio/?url=${encodeURIComponent(audioUrl)}`;
             responseAudio.crossOrigin = "anonymous";
-            responseAudio.style.display = 'block';
-
-            sourceNode = audioContext.createMediaElementSource(responseAudio);
-            sourceNode.connect(analyser);
-            analyser.connect(audioContext.destination);
-
-            startPulseEffect(); // pulse with AI audio
-
+            startPulseEffect('playback');
+            stopAudioBtn.style.display = 'block';
             await responseAudio.play();
-            
             responseAudio.onended = () => {
                 stopPulseEffect();
-                if (sourceNode) {
-                    sourceNode.disconnect();
-                    sourceNode = null;
-                }
-                statusDisplay.textContent = isErrorMessage
-                    ? "Error playback finished."
-                    : "Ready for your next question.";
+                stopAudioBtn.style.display = 'none';
+                statusDisplay.textContent = isErrorMessage ? "Finished error playback." : "Ready for your next question.";
+                disconnectPlayback();
             };
         } catch (e) {
             console.error("Failed to play response audio:", e);
             statusDisplay.textContent = "Could not play AI response.";
             statusDisplay.classList.add('error');
             stopPulseEffect();
+            stopAudioBtn.style.display = 'none';
+            disconnectPlayback();
         }
     }
 
-    // --- Pulse Effect (around record button) ---
-    function startPulseEffect() {
+    function startPulseEffect(mode = 'recording') {
         audioVisualizer.style.display = 'block';
         const canvasCtx = audioVisualizer.getContext('2d');
+        const analyser = mode === 'recording' ? micAnalyser : playbackAnalyser;
         const bufferLength = analyser.frequencyBinCount;
         const dataArray = new Uint8Array(bufferLength);
-
         function draw() {
             animationId = requestAnimationFrame(draw);
             analyser.getByteFrequencyData(dataArray);
             const avg = dataArray.reduce((a, b) => a + b, 0) / bufferLength;
-            
             canvasCtx.clearRect(0, 0, audioVisualizer.width, audioVisualizer.height);
-
-            const radius = 60 + avg / 4; // pulse size
+            const radius = 60 + avg / 4;
             canvasCtx.beginPath();
             canvasCtx.arc(audioVisualizer.width / 2, audioVisualizer.height / 2, radius, 0, 2 * Math.PI);
             canvasCtx.strokeStyle = 'rgba(153, 102, 255, 0.7)';
@@ -180,38 +292,36 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function stopPulseEffect() {
-        if (animationId) {
-            cancelAnimationFrame(animationId);
-            animationId = null;
-        }
+        if (animationId) cancelAnimationFrame(animationId);
+        animationId = null;
         const canvasCtx = audioVisualizer.getContext('2d');
         canvasCtx.clearRect(0, 0, audioVisualizer.width, audioVisualizer.height);
         audioVisualizer.style.display = 'none';
     }
 
-    // --- UI Functions ---
     function resetUIState() {
         transcriptionContainer.style.display = "none";
         llmResponseContainer.style.display = "none";
         transcriptionOutput.textContent = "";
         llmResponseOutput.textContent = "";
         statusDisplay.classList.remove('error');
+        stopAudioBtn.style.display = 'none';
     }
-    
     function updateUIRecording(isRec) {
         recordBtn.classList.toggle('recording', isRec);
         recordBtnText.textContent = isRec ? "Stop" : "Record";
         statusDisplay.textContent = isRec ? "Listening..." : "Ready to start";
     }
-
     function updateTextOutputs(transcription, llmResponse) {
         if (transcription) {
-            transcriptionOutput.textContent = `You said: "${transcription}"`;
+            transcriptionOutput.textContent = `"${transcription}"`;
             transcriptionContainer.style.display = "block";
         }
         if (llmResponse) {
-            llmResponseOutput.textContent = `AI: "${llmResponse}"`;
+            llmResponseOutput.textContent = `${llmResponse}`;
             llmResponseContainer.style.display = "block";
         }
     }
 });
+// --- End of script.js ---
+// This script handles audio recording, playback, and UI updates for the application.

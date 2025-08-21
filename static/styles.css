@@ -17,7 +17,7 @@ body {
     top: 18vh;
     left: 50%;
     transform: translate(-50%, -50%);
-    font-size: 12.2vw;
+    font-size: 12vw;
     font-weight: 600;
     color: rgba(255, 255, 255, 0.04);
     z-index: -1;
@@ -26,7 +26,7 @@ body {
 }
 
 .agent-container {
-    background: rgba(255, 255, 255, 0.05); 
+    background: rgba(255, 255, 255, 0.05);
     backdrop-filter: blur(4px);
     -webkit-backdrop-filter: blur(4px);
     border: 1px solid rgba(255, 255, 255, 0.1);
@@ -40,8 +40,16 @@ body {
     align-items: center;
 }
 
-h1 { margin-top: 0; font-size: 2.2rem; color: #fff; margin-bottom: 8px; }
-p { color: #a0a0a0; margin-bottom: 25px; }
+h1 {
+    margin-top: 0;
+    font-size: 2.2rem;
+    color: #fff;
+    margin-bottom: 8px;
+}
+p {
+    color: #a0a0a0;
+    margin-bottom: 25px;
+}
 
 #controls {
     position: relative;
@@ -85,7 +93,7 @@ p { color: #a0a0a0; margin-bottom: 25px; }
     background: linear-gradient(145deg, #2a2a2a, #1a1a1a);
     box-shadow: 0 0 15px rgba(153, 102, 255, 0.3), inset 0 0 10px rgba(0,0,0,0.5);
     transition: all 0.3s ease;
-    position: relative; 
+    position: relative;
     z-index: 1;
 }
 
@@ -173,4 +181,52 @@ h4 {
 .stop-audio-button:hover {
     background: #e60000;
     transform: scale(1.05);
+}
+.stop-audio-button:active {
+    transform: scale(0.95);
+}
+
+.websocket-status {
+    font-size: 0.9rem;
+    color: #888;
+    margin: 10px 0;
+    padding: 8px 12px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    transition: all 0.3s ease;
+}
+
+.websocket-status.connected {
+    color: #00ff88;
+    border-color: #00ff88;
+    background: rgba(0, 255, 136, 0.1);
+}
+
+.websocket-status.error {
+    color: #ff6666;
+    border-color: #ff6666;
+    background: rgba(255, 102, 102, 0.1);
+}
+
+.test-button {
+    background: #9966ff;
+    color: white;
+    border: none;
+    padding: 10px 18px;
+    font-size: 1rem;
+    border-radius: 8px;
+    cursor: pointer;
+    box-shadow: 0 0 10px rgba(153, 102, 255, 0.4);
+    transition: background 0.3s ease, transform 0.2s ease;
+    margin: 10px 0;
+}
+
+.test-button:hover {
+    background: #7a4fd1;
+    transform: scale(1.05);
+}
+
+.test-button:active {
+    transform: scale(0.95);
 }

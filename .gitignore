@@ -5,6 +5,7 @@ myenv/
 
 # Python cache
 __pycache__/
+.vscode/
 
 # Uploaded / media files
 uploads/
