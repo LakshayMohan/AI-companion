@@ -26,18 +26,30 @@ body {
 }
 
 .agent-container {
-    background: rgba(255, 255, 255, 0.05);
-    backdrop-filter: blur(4px);
-    -webkit-backdrop-filter: blur(4px);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 20px;
-    padding: 30px 40px;
+    background: linear-gradient(135deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.05));
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 25px;
+    padding: 40px 50px;
     width: 100%;
-    max-width: 500px;
-    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+    max-width: 550px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.1);
     display: flex;
     flex-direction: column;
     align-items: center;
+    position: relative;
+    overflow: hidden;
+}
+
+.agent-container::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
 }
 
 h1 {
@@ -78,23 +90,46 @@ p {
 }
 
 .record-button {
-    width: 120px;
-    height: 120px;
+    width: 140px;
+    height: 140px;
     border-radius: 50%;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    font-size: 1rem;
+    font-size: 1.1rem;
     font-weight: 600;
     color: #fff;
     cursor: pointer;
-    border: 5px solid #9966ff;
+    border: 6px solid #9966ff;
     background: linear-gradient(145deg, #2a2a2a, #1a1a1a);
-    box-shadow: 0 0 15px rgba(153, 102, 255, 0.3), inset 0 0 10px rgba(0,0,0,0.5);
-    transition: all 0.3s ease;
+    box-shadow: 0 0 25px rgba(153, 102, 255, 0.4), inset 0 0 15px rgba(0,0,0,0.5);
+    transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
     position: relative;
     z-index: 1;
+    overflow: hidden;
+}
+
+.record-button::before {
+    content: '';
+    position: absolute;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: conic-gradient(from 0deg, transparent, rgba(153, 102, 255, 0.3), transparent);
+    animation: rotate 3s linear infinite;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+}
+
+.record-button:hover::before {
+    opacity: 1;
+}
+
+@keyframes rotate {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
 }
 
 .record-button:hover {
@@ -105,6 +140,14 @@ p {
 .record-button.recording {
     border-color: #ff4d4d;
     background: linear-gradient(145deg, #4d0000, #3d0000);
+    transform: scale(1.1);
+    box-shadow: 0 0 35px rgba(255, 77, 77, 0.6), inset 0 0 20px rgba(0,0,0,0.5);
+    animation: recording-pulse 2s ease-in-out infinite;
+}
+
+@keyframes recording-pulse {
+    0%, 100% { transform: scale(1.1); }
+    50% { transform: scale(1.15); }
 }
 
 .mic-icon {
@@ -141,6 +184,33 @@ p {
     text-align: left;
     white-space: pre-wrap;
     word-wrap: break-word;
+    transition: all 0.3s ease;
+    position: relative;
+}
+
+.turn-number {
+    color: #9966ff;
+    font-weight: bold;
+    margin-right: 8px;
+}
+
+.end-turn {
+    color: #00ff88;
+    font-weight: bold;
+    margin-left: 8px;
+    animation: pulse 1s ease-in-out;
+}
+
+@keyframes pulse {
+    0% { opacity: 0.5; }
+    50% { opacity: 1; }
+    100% { opacity: 0.5; }
+}
+
+.response-box.formatted {
+    border: 2px solid #4CAF50;
+    box-shadow: 0 0 15px rgba(76, 175, 80, 0.3);
+    background: rgba(76, 175, 80, 0.1);
 }
 
 .user-box {

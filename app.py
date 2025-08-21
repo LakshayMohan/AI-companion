@@ -1,6 +1,7 @@
 # app.py
 import os
 import logging
+import json
 from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -59,8 +60,9 @@ class AudioStreamer:
         self.active_sessions = {}
         self.streaming_clients = {}  # Store AssemblyAI streaming clients per session
     
-    async def start_streaming(self, session_id: str):
+    async def start_streaming(self, session_id: str, websocket=None):
         """Start a new audio streaming session with AssemblyAI transcription (no recording)"""
+        self.websocket = websocket
         
         # Initialize AssemblyAI Universal Streaming client
         try:
@@ -85,6 +87,20 @@ class AudioStreamer:
                     if event.transcript:
                         print(f"🎤 TRANSCRIPTION: {event.transcript}")
                         logging.info(f"Transcription: {event.transcript}")
+                        
+                        # Send transcription to client via WebSocket
+                        if hasattr(self, 'websocket') and self.websocket:
+                            try:
+                                message = {
+                                    "type": "transcription",
+                                    "transcript": event.transcript,
+                                    "end_of_turn": event.end_of_turn,
+                                    "turn_is_formatted": event.turn_is_formatted,
+                                    "turn_order": event.turn_order
+                                }
+                                asyncio.create_task(self.websocket.send_text(json.dumps(message)))
+                            except Exception as e:
+                                logging.error(f"Error sending transcription to client: {e}")
                 
                 def on_terminated(client_instance, event: TerminationEvent):
                     print(f"🔌 AssemblyAI session terminated: {event.audio_duration_seconds} seconds processed")
@@ -181,7 +197,7 @@ async def websocket_audio_endpoint(websocket: WebSocket, session_id: str):
     
     try:
         # Start streaming (no recording)
-        session_id = await audio_streamer.start_streaming(session_id)
+        session_id = await audio_streamer.start_streaming(session_id, websocket)
         await websocket.send_text(f"Streaming started: {session_id}")
         
         while True:

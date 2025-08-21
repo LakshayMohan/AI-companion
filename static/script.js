@@ -58,6 +58,14 @@ document.addEventListener('DOMContentLoaded', () => {
             
             websocket.onmessage = (event) => {
                 console.log('Server message:', event.data);
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'transcription') {
+                        handleTranscription(data);
+                    }
+                } catch (error) {
+                    console.log('Non-JSON message:', event.data);
+                }
             };
             
             websocket.onerror = (error) => {
@@ -301,6 +309,40 @@ document.addEventListener('DOMContentLoaded', () => {
         recordBtnText.textContent = isRec ? "Stop" : "Record";
         statusDisplay.textContent = isRec ? "Listening..." : "Ready to start";
     }
+    function handleTranscription(data) {
+        const { transcript, end_of_turn, turn_is_formatted, turn_order } = data;
+        
+        if (transcript) {
+            // Update the transcription display
+            transcriptionOutput.textContent = `"${transcript}"`;
+            transcriptionContainer.style.display = "block";
+            
+            // Add turn number if it's a new turn
+            if (turn_order && turn_order > 0) {
+                transcriptionOutput.innerHTML = `<span class="turn-number">Turn ${turn_order}:</span> "${transcript}"`;
+            }
+            
+            // Highlight when turn is formatted (final)
+            if (turn_is_formatted) {
+                transcriptionOutput.classList.add('formatted');
+                transcriptionOutput.style.color = '#4CAF50';
+                transcriptionOutput.style.fontWeight = 'bold';
+            } else {
+                transcriptionOutput.classList.remove('formatted');
+                transcriptionOutput.style.color = '#333';
+                transcriptionOutput.style.fontWeight = 'normal';
+            }
+            
+            // Show end of turn indicator
+            if (end_of_turn) {
+                transcriptionOutput.innerHTML += ' <span class="end-turn">✓</span>';
+                statusDisplay.textContent = "Turn completed. Ready for next input.";
+            } else {
+                statusDisplay.textContent = "Listening...";
+            }
+        }
+    }
+
     function updateTextOutputs(transcription, llmResponse) {
         if (transcription) {
             transcriptionOutput.textContent = `"${transcription}"`;
