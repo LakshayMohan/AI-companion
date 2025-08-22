@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import httpx
+import websockets
 import assemblyai as aai
 import google.generativeai as genai
 from collections import defaultdict
@@ -25,6 +26,8 @@ load_dotenv()
 MURF_API_KEY = os.getenv("MURF_API_KEY")
 ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+MURF_CONTEXT_ID = os.getenv("MURF_CONTEXT_ID", "murf_context_global_1")
+MURF_WS_URL = os.getenv("MURF_WS_URL", "wss://api.murf.ai/v1/speech/stream-input")
 
 if ASSEMBLYAI_API_KEY:
     aai.settings.api_key = ASSEMBLYAI_API_KEY
@@ -85,12 +88,12 @@ class AudioStreamer:
                 )
                 
                 def on_begin(client_instance, event: BeginEvent):
-                    print(f"🔗 AssemblyAI session started: {event.id}")
+                    print(f"AssemblyAI session started: {event.id}")
                     logging.info(f"AssemblyAI session started: {event.id}")
                 
                 def on_turn(client_instance, event: TurnEvent):
                     if event.transcript:
-                        print(f"🎤 TRANSCRIPTION: {event.transcript}")
+                        print(f"TRANSCRIPTION: {event.transcript}")
                         logging.info(f"Transcription: {event.transcript}")
                         
                         # Store transcription data for later sending
@@ -107,22 +110,22 @@ class AudioStreamer:
                             "turn_order": event.turn_order
                         }
                         self.pending_transcriptions[session_id].append(message)
-                        print(f"📝 Queued transcription for session {session_id}: {event.transcript}")
+                        print(f"Queued transcription for session {session_id}: {event.transcript}")
                         
                         # If this is the final formatted transcript, trigger LLM streaming
                         if event.end_of_turn and event.turn_is_formatted:
-                            print(f"🚀 Triggering LLM streaming for final transcript: {event.transcript}")
+                            print(f"Triggering LLM streaming for final transcript: {event.transcript}")
                             # Store the final transcript for LLM processing
                             if not hasattr(self, 'final_transcripts'):
                                 self.final_transcripts = {}
                             self.final_transcripts[session_id] = event.transcript
                 
                 def on_terminated(client_instance, event: TerminationEvent):
-                    print(f"🔌 AssemblyAI session terminated: {event.audio_duration_seconds} seconds processed")
+                    print(f"AssemblyAI session terminated: {event.audio_duration_seconds} seconds processed")
                     logging.info(f"AssemblyAI session terminated: {event.audio_duration_seconds} seconds")
                 
                 def on_error(client_instance, error: StreamingError):
-                    print(f"❌ TRANSCRIPTION ERROR: {error}")
+                    print(f"TRANSCRIPTION ERROR: {error}")
                     logging.error(f"AssemblyAI error: {error}")
                 
                 client = StreamingClient(
@@ -214,7 +217,7 @@ class AudioStreamer:
         if session_id in self.streaming_clients and self.streaming_clients[session_id]:
             try:
                 self.streaming_clients[session_id].disconnect(terminate=True)
-                print("🔌 AssemblyAI Universal Streaming client disconnected")
+                print("AssemblyAI Universal Streaming client disconnected")
             except Exception as e:
                 logging.error(f"Error disconnecting AssemblyAI Universal Streaming client: {e}")
             finally:
@@ -256,11 +259,84 @@ class AudioStreamer:
                 "transcript": user_text
             }
             await websocket.send_text(json.dumps(start_message))
-            print(f"📤 Sent LLM start message to client")
+            print(f"Sent LLM start message to client")
             
             # Stream response using synchronous generator in a background thread
             loop = asyncio.get_running_loop()
             full_response_ref = {"text": ""}
+
+            # Murf WebSocket: open once per LLM response, reuse static context_id
+            async def murf_streamer(text_stream_queue: asyncio.Queue):
+                if not MURF_API_KEY:
+                    print("❌ MURF_API_KEY not set, skipping TTS stream")
+                    return
+                uri = f"{MURF_WS_URL}?api-key={MURF_API_KEY}&sample_rate=44100&channel_type=MONO&format=WAV"
+                try:
+                    async with websockets.connect(uri) as murf_ws:
+                        # Send voice_config (optional)
+                        voice_config_msg = {
+                            "voice_config": {
+                                "voiceId": "en-US-amara",
+                                "style": "Conversational",
+                                "rate": 0,
+                                "pitch": 0,
+                                "variation": 1
+                            },
+                            "context_id": MURF_CONTEXT_ID
+                        }
+                        await murf_ws.send(json.dumps(voice_config_msg))
+
+                        # Task: receiver prints base64 audio to console
+                        async def receiver():
+                            try:
+                                async for msg in murf_ws:
+                                    try:
+                                        data = json.loads(msg)
+                                    except Exception:
+                                        continue
+                                    # Quickstart schema: base64 in "audio", final flag in "final"
+                                    if "audio" in data:
+                                        audio_b64 = data.get("audio")
+                                        if audio_b64:
+                                            print(f"Murf audio chunk (base64): {audio_b64[:80]}...")
+                                    if data.get("final"):
+                                        print("Murf synthesis complete")
+                                        break
+                            except Exception as ex:
+                                print(f"❌ Murf receiver error: {ex}")
+
+                        recv_task = asyncio.create_task(receiver())
+
+                        # Send text chunks from queue
+                        chunk_id = 0
+                        while True:
+                            chunk = await text_stream_queue.get()
+                            if chunk is None:
+                                break
+                            await murf_ws.send(json.dumps({
+                                "text": chunk,
+                                "context_id": MURF_CONTEXT_ID
+                            }))
+                            chunk_id += 1
+
+                        # Signal final
+                        await murf_ws.send(json.dumps({
+                            "text": "",
+                            "end": True,
+                            "context_id": MURF_CONTEXT_ID
+                        }))
+
+                        # Wait briefly for trailing audio
+                        try:
+                            await asyncio.wait_for(recv_task, timeout=2.0)
+                        except asyncio.TimeoutError:
+                            recv_task.cancel()
+                except Exception as ex:
+                    print(f"❌ Murf websocket error: {ex}")
+
+            # Queue to bridge LLM text chunks to Murf
+            text_queue: asyncio.Queue[str | None] = asyncio.Queue()
+            murf_task = asyncio.create_task(murf_streamer(text_queue))
 
             def stream_sync():
                 try:
@@ -287,7 +363,9 @@ class AudioStreamer:
                                 "is_complete": False
                             })
                             loop.call_soon_threadsafe(asyncio.create_task, websocket.send_text(msg))
-                            print(f"📤 Sent LLM chunk: {text_chunk}")
+                            # Also forward chunk to Murf
+                            loop.call_soon_threadsafe(asyncio.create_task, text_queue.put(text_chunk))
+                            print(f"Sent LLM chunk: {text_chunk}")
                     # Ensure the stream is fully resolved (no-ops for SDKs that buffer)
                     try:
                         stream.resolve()
@@ -300,7 +378,9 @@ class AudioStreamer:
                         "is_complete": True
                     })
                     loop.call_soon_threadsafe(asyncio.create_task, websocket.send_text(complete_msg))
-                    print(f"✅ LLM streaming completed: {full_response_ref['text']}")
+                    # Close Murf queue
+                    loop.call_soon_threadsafe(asyncio.create_task, text_queue.put(None))
+                    print(f"LLM streaming completed: {full_response_ref['text']}")
                 except Exception as ex:
                     err_msg = json.dumps({
                         "type": "llm_error",
@@ -310,6 +390,11 @@ class AudioStreamer:
 
             # Run streaming in a worker thread and wait for it to finish
             await asyncio.to_thread(stream_sync)
+            # Ensure Murf drain completes
+            try:
+                await asyncio.wait_for(murf_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                murf_task.cancel()
 
             # Add AI response to chat history after finishing
             if full_response_ref["text"]:
