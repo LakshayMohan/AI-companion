@@ -192,13 +192,41 @@ p {
     color: #9966ff;
     font-weight: bold;
     margin-right: 8px;
+    background: rgba(153, 102, 255, 0.1);
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.live-indicator {
+    color: #ff6b6b;
+    font-size: 1.2rem;
+    margin-left: 8px;
+    animation: live-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes live-pulse {
+    0%, 100% { opacity: 0.3; transform: scale(0.8); }
+    50% { opacity: 1; transform: scale(1.2); }
 }
 
 .end-turn {
     color: #00ff88;
     font-weight: bold;
     margin-left: 8px;
-    animation: pulse 1s ease-in-out;
+    background: rgba(0, 255, 136, 0.1);
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.8rem;
+    animation: success-pulse 2s ease-in-out;
+}
+
+@keyframes success-pulse {
+    0% { opacity: 0; transform: scale(0.8); }
+    50% { opacity: 1; transform: scale(1.1); }
+    100% { opacity: 1; transform: scale(1); }
 }
 
 @keyframes pulse {
@@ -207,10 +235,60 @@ p {
     100% { opacity: 0.5; }
 }
 
+.response-box.live {
+    border: 2px solid #ff6b6b;
+    box-shadow: 0 0 15px rgba(255, 107, 107, 0.3);
+    background: rgba(255, 107, 107, 0.05);
+    animation: live-glow 2s ease-in-out infinite;
+}
+
+@keyframes live-glow {
+    0%, 100% { box-shadow: 0 0 15px rgba(255, 107, 107, 0.3); }
+    50% { box-shadow: 0 0 25px rgba(255, 107, 107, 0.5); }
+}
+
 .response-box.formatted {
     border: 2px solid #4CAF50;
     box-shadow: 0 0 15px rgba(76, 175, 80, 0.3);
     background: rgba(76, 175, 80, 0.1);
+    animation: formatted-success 0.5s ease-out;
+}
+
+@keyframes formatted-success {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.02); }
+    100% { transform: scale(1); }
+}
+
+/* LLM Response Styling */
+.typing-indicator {
+    color: #9966ff;
+    animation: blink 1s infinite;
+    font-weight: bold;
+}
+
+@keyframes blink {
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0; }
+}
+
+.response-box.completed {
+    border: 2px solid #00ff88;
+    box-shadow: 0 0 15px rgba(0, 255, 136, 0.3);
+    background: rgba(0, 255, 136, 0.05);
+    animation: completion-success 0.5s ease-out;
+}
+
+@keyframes completion-success {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.01); }
+    100% { transform: scale(1); }
+}
+
+.response-box.error {
+    border: 2px solid #ff6666;
+    box-shadow: 0 0 15px rgba(255, 102, 102, 0.3);
+    background: rgba(255, 102, 102, 0.1);
 }
 
 .user-box {
@@ -226,14 +304,30 @@ p {
 #transcription-container, #llm-response-container {
     width: 100%;
     text-align: left;
-    margin-top: 15px;
+    margin-top: 20px;
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 15px;
+    padding: 20px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
 }
 
 h4 {
-    margin: 0 0 5px 0;
-    font-size: 0.9rem;
-    color: #bbb;
+    margin: 0 0 10px 0;
+    font-size: 1rem;
+    color: #9966ff;
     text-transform: uppercase;
+    font-weight: 600;
+    letter-spacing: 1px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+h4::before {
+    content: '🎤';
+    font-size: 1.2rem;
 }
 
 .stop-audio-button {

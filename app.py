@@ -64,6 +64,11 @@ class AudioStreamer:
         """Start a new audio streaming session with AssemblyAI transcription (no recording)"""
         self.websocket = websocket
         
+        # Store websocket reference for this session
+        if not hasattr(self, 'session_websockets'):
+            self.session_websockets = {}
+        self.session_websockets[session_id] = websocket
+        
         # Initialize AssemblyAI Universal Streaming client
         try:
             if ASSEMBLYAI_API_KEY:
@@ -88,19 +93,29 @@ class AudioStreamer:
                         print(f"🎤 TRANSCRIPTION: {event.transcript}")
                         logging.info(f"Transcription: {event.transcript}")
                         
-                        # Send transcription to client via WebSocket
-                        if hasattr(self, 'websocket') and self.websocket:
-                            try:
-                                message = {
-                                    "type": "transcription",
-                                    "transcript": event.transcript,
-                                    "end_of_turn": event.end_of_turn,
-                                    "turn_is_formatted": event.turn_is_formatted,
-                                    "turn_order": event.turn_order
-                                }
-                                asyncio.create_task(self.websocket.send_text(json.dumps(message)))
-                            except Exception as e:
-                                logging.error(f"Error sending transcription to client: {e}")
+                        # Store transcription data for later sending
+                        if not hasattr(self, 'pending_transcriptions'):
+                            self.pending_transcriptions = {}
+                        if session_id not in self.pending_transcriptions:
+                            self.pending_transcriptions[session_id] = []
+                        
+                        message = {
+                            "type": "transcription",
+                            "transcript": event.transcript,
+                            "end_of_turn": event.end_of_turn,
+                            "turn_is_formatted": event.turn_is_formatted,
+                            "turn_order": event.turn_order
+                        }
+                        self.pending_transcriptions[session_id].append(message)
+                        print(f"📝 Queued transcription for session {session_id}: {event.transcript}")
+                        
+                        # If this is the final formatted transcript, trigger LLM streaming
+                        if event.end_of_turn and event.turn_is_formatted:
+                            print(f"🚀 Triggering LLM streaming for final transcript: {event.transcript}")
+                            # Store the final transcript for LLM processing
+                            if not hasattr(self, 'final_transcripts'):
+                                self.final_transcripts = {}
+                            self.final_transcripts[session_id] = event.transcript
                 
                 def on_terminated(client_instance, event: TerminationEvent):
                     print(f"🔌 AssemblyAI session terminated: {event.audio_duration_seconds} seconds processed")
@@ -160,6 +175,31 @@ class AudioStreamer:
             except Exception as e:
                 logging.error(f"Error streaming audio to AssemblyAI: {e}")
         
+        # Send any pending transcriptions to the client
+        session_websocket = self.session_websockets.get(session_id)
+        if session_websocket and hasattr(self, 'pending_transcriptions') and session_id in self.pending_transcriptions:
+            pending_messages = self.pending_transcriptions[session_id]
+            if pending_messages:
+                try:
+                    for message in pending_messages:
+                        await session_websocket.send_text(json.dumps(message))
+                        print(f"✅ Sent transcription to client: {message['transcript']}")
+                    # Clear the pending messages after sending
+                    self.pending_transcriptions[session_id] = []
+                except Exception as e:
+                    logging.error(f"Error sending pending transcriptions to client: {e}")
+        
+        # Check if we have a final transcript to process with LLM
+        if hasattr(self, 'final_transcripts') and session_id in self.final_transcripts:
+            final_transcript = self.final_transcripts[session_id]
+            print(f"🤖 Processing final transcript with LLM: {final_transcript}")
+            
+            # Start LLM streaming in background
+            asyncio.create_task(self.stream_llm_response(session_id, final_transcript, session_websocket))
+            
+            # Remove the processed transcript
+            del self.final_transcripts[session_id]
+        
         logging.debug(f"Streamed {len(audio_data)} bytes to session {session_id}")
     
     async def stop_streaming(self, session_id: str):
@@ -185,7 +225,109 @@ class AudioStreamer:
         
         # Clean up
         del self.active_sessions[session_id]
+        if hasattr(self, 'session_websockets') and session_id in self.session_websockets:
+            del self.session_websockets[session_id]
+        if hasattr(self, 'pending_transcriptions') and session_id in self.pending_transcriptions:
+            del self.pending_transcriptions[session_id]
+        if hasattr(self, 'final_transcripts') and session_id in self.final_transcripts:
+            del self.final_transcripts[session_id]
         return session_id
+    
+    async def stream_llm_response(self, session_id: str, user_text: str, websocket):
+        """Stream LLM response using Google's Gemini API"""
+        try:
+            if not GEMINI_API_KEY:
+                print("❌ Gemini API key not set")
+                return
+            
+            print(f"🤖 Starting LLM streaming for: {user_text}")
+            
+            # Add user message to chat history
+            if session_id not in chat_history:
+                chat_history[session_id] = []
+            chat_history[session_id].append({"role": "user", "parts": [user_text]})
+            
+            # Initialize Gemini model
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            
+            # Send start message to client
+            start_message = {
+                "type": "llm_start",
+                "transcript": user_text
+            }
+            await websocket.send_text(json.dumps(start_message))
+            print(f"📤 Sent LLM start message to client")
+            
+            # Stream response using synchronous generator in a background thread
+            loop = asyncio.get_running_loop()
+            full_response_ref = {"text": ""}
+
+            def stream_sync():
+                try:
+                    stream = model.generate_content(
+                        user_text,
+                        stream=True,
+                        generation_config=genai.types.GenerationConfig(
+                            temperature=0.7,
+                            top_p=0.8,
+                            top_k=40,
+                            max_output_tokens=2048,
+                        )
+                    )
+                    for chunk in stream:
+                        try:
+                            text_chunk = getattr(chunk, "text", None) or ""
+                        except Exception:
+                            text_chunk = ""
+                        if text_chunk:
+                            full_response_ref["text"] += text_chunk
+                            msg = json.dumps({
+                                "type": "llm_chunk",
+                                "text": text_chunk,
+                                "is_complete": False
+                            })
+                            loop.call_soon_threadsafe(asyncio.create_task, websocket.send_text(msg))
+                            print(f"📤 Sent LLM chunk: {text_chunk}")
+                    # Ensure the stream is fully resolved (no-ops for SDKs that buffer)
+                    try:
+                        stream.resolve()
+                    except Exception:
+                        pass
+                    # Completion message
+                    complete_msg = json.dumps({
+                        "type": "llm_complete",
+                        "full_response": full_response_ref["text"],
+                        "is_complete": True
+                    })
+                    loop.call_soon_threadsafe(asyncio.create_task, websocket.send_text(complete_msg))
+                    print(f"✅ LLM streaming completed: {full_response_ref['text']}")
+                except Exception as ex:
+                    err_msg = json.dumps({
+                        "type": "llm_error",
+                        "error": str(ex)
+                    })
+                    loop.call_soon_threadsafe(asyncio.create_task, websocket.send_text(err_msg))
+
+            # Run streaming in a worker thread and wait for it to finish
+            await asyncio.to_thread(stream_sync)
+
+            # Add AI response to chat history after finishing
+            if full_response_ref["text"]:
+                chat_history[session_id].append({"role": "model", "parts": [full_response_ref["text"]]})
+            
+        except Exception as e:
+            print(f"❌ Error in LLM streaming: {e}")
+            logging.error(f"LLM streaming error: {e}")
+            
+            # Send error message to client
+            error_message = {
+                "type": "llm_error",
+                "error": str(e)
+            }
+            try:
+                await websocket.send_text(json.dumps(error_message))
+            except:
+                pass
 
 # Global audio streamer instance
 audio_streamer = AudioStreamer()

@@ -60,8 +60,24 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.log('Server message:', event.data);
                 try {
                     const data = JSON.parse(event.data);
+                    console.log('Parsed data:', data);
                     if (data.type === 'transcription') {
+                        console.log('Processing transcription data');
                         handleTranscription(data);
+                    } else if (data.type === 'llm_start') {
+                        console.log('LLM streaming started');
+                        handleLLMStart(data);
+                    } else if (data.type === 'llm_chunk') {
+                        console.log('LLM chunk received');
+                        handleLLMChunk(data);
+                    } else if (data.type === 'llm_complete') {
+                        console.log('LLM streaming completed');
+                        handleLLMComplete(data);
+                    } else if (data.type === 'llm_error') {
+                        console.log('LLM error received');
+                        handleLLMError(data);
+                    } else {
+                        console.log('Message type:', data.type);
                     }
                 } catch (error) {
                     console.log('Non-JSON message:', event.data);
@@ -195,16 +211,16 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function stopRecording() {
-        if (isRecording) {
-            isRecording = false;
-            stopPulseEffect();
-            disconnectRecording();
-            disconnectWebSocket();
-            updateUIRecording(false);
-            statusDisplay.textContent = "Recording stopped. Ready to Start Again.";
+            function stopRecording() {
+            if (isRecording) {
+                isRecording = false;
+                stopPulseEffect();
+                disconnectRecording();
+                disconnectWebSocket();
+                updateUIRecording(false);
+                statusDisplay.textContent = "Streaming stopped.";
+            }
         }
-    }
 
     // --- Legacy processAudio function (kept for compatibility) ---
     async function processAudio() {
@@ -309,38 +325,121 @@ document.addEventListener('DOMContentLoaded', () => {
         recordBtnText.textContent = isRec ? "Stop" : "Record";
         statusDisplay.textContent = isRec ? "Listening..." : "Ready to start";
     }
+    
     function handleTranscription(data) {
+        console.log('Handling transcription:', data);
         const { transcript, end_of_turn, turn_is_formatted, turn_order } = data;
         
         if (transcript) {
-            // Update the transcription display
-            transcriptionOutput.textContent = `"${transcript}"`;
+            console.log('Processing transcript:', transcript);
+            
+            // Always show the transcription container
             transcriptionContainer.style.display = "block";
+            console.log('Transcription container displayed');
+            
+            // Create a more appealing transcription display
+            let displayText = transcript;
             
             // Add turn number if it's a new turn
             if (turn_order && turn_order > 0) {
-                transcriptionOutput.innerHTML = `<span class="turn-number">Turn ${turn_order}:</span> "${transcript}"`;
+                displayText = `<span class="turn-number">Turn ${turn_order}</span> ${transcript}`;
             }
             
-            // Highlight when turn is formatted (final)
+            // Add live indicator for ongoing transcription
+            if (!end_of_turn) {
+                displayText += ' <span class="live-indicator">●</span>';
+            }
+            
+            // Update the transcription display
+            transcriptionOutput.innerHTML = displayText;
+            console.log('Updated transcription output:', transcriptionOutput.innerHTML);
+            
+            // Apply styling based on transcription state
             if (turn_is_formatted) {
                 transcriptionOutput.classList.add('formatted');
-                transcriptionOutput.style.color = '#4CAF50';
-                transcriptionOutput.style.fontWeight = 'bold';
+                transcriptionOutput.classList.remove('live');
+                console.log('Applied formatted styling');
             } else {
+                transcriptionOutput.classList.add('live');
                 transcriptionOutput.classList.remove('formatted');
-                transcriptionOutput.style.color = '#333';
-                transcriptionOutput.style.fontWeight = 'normal';
+                console.log('Applied live styling');
             }
             
             // Show end of turn indicator
             if (end_of_turn) {
-                transcriptionOutput.innerHTML += ' <span class="end-turn">✓</span>';
+                transcriptionOutput.innerHTML += ' <span class="end-turn">✓ Complete</span>';
                 statusDisplay.textContent = "Turn completed. Ready for next input.";
+                transcriptionOutput.classList.remove('live');
+                console.log('Turn completed');
             } else {
                 statusDisplay.textContent = "Listening...";
             }
+            
+            // Scroll to show the latest transcription
+            transcriptionContainer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            console.log('Scrolled to transcription');
+        } else {
+            console.log('No transcript in data');
         }
+    }
+
+    // --- LLM Streaming Functions ---
+    let currentLLMResponse = "";
+    
+    function handleLLMStart(data) {
+        console.log('Starting LLM response display');
+        currentLLMResponse = "";
+        
+        // Show the LLM response container
+        llmResponseContainer.style.display = "block";
+        llmResponseOutput.textContent = "";
+        
+        // Update status
+        statusDisplay.textContent = "AI is thinking...";
+        statusDisplay.classList.remove('error');
+        
+        // Scroll to show the LLM response area
+        llmResponseContainer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+    
+    function handleLLMChunk(data) {
+        if (data.text) {
+            currentLLMResponse += data.text;
+            llmResponseOutput.textContent = currentLLMResponse;
+            
+            // Add typing indicator
+            llmResponseOutput.innerHTML = currentLLMResponse + '<span class="typing-indicator">|</span>';
+            
+            // Scroll to keep the latest text visible
+            llmResponseOutput.scrollTop = llmResponseOutput.scrollHeight;
+        }
+    }
+    
+    function handleLLMComplete(data) {
+        console.log('LLM response completed');
+        
+        // Remove typing indicator and show final response
+        llmResponseOutput.textContent = data.full_response || currentLLMResponse;
+        
+        // Update status
+        statusDisplay.textContent = "AI response completed. Ready for next input.";
+        
+        // Add completion styling
+        llmResponseOutput.classList.add('completed');
+        
+        console.log('Final LLM response:', data.full_response || currentLLMResponse);
+    }
+    
+    function handleLLMError(data) {
+        console.error('LLM error:', data.error);
+        
+        // Show error in LLM response area
+        llmResponseOutput.textContent = `Error: ${data.error}`;
+        llmResponseOutput.classList.add('error');
+        
+        // Update status
+        statusDisplay.textContent = "AI encountered an error.";
+        statusDisplay.classList.add('error');
     }
 
     function updateTextOutputs(transcription, llmResponse) {
