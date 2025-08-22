@@ -20,6 +20,8 @@ document.addEventListener('DOMContentLoaded', () => {
     let microphoneSource = null, animationId = null;
     let websocket = null;
     let processor = null;
+    let workletNode = null;
+    let base64AudioChunks = [];
     let stream = null;
     
     // --- Audio Contexts and Analyser Nodes ---
@@ -57,30 +59,36 @@ document.addEventListener('DOMContentLoaded', () => {
             };
             
             websocket.onmessage = (event) => {
-                console.log('Server message:', event.data);
                 try {
                     const data = JSON.parse(event.data);
-                    console.log('Parsed data:', data);
-                    if (data.type === 'transcription') {
-                        console.log('Processing transcription data');
-                        handleTranscription(data);
-                    } else if (data.type === 'llm_start') {
-                        console.log('LLM streaming started');
-                        handleLLMStart(data);
-                    } else if (data.type === 'llm_chunk') {
-                        console.log('LLM chunk received');
-                        handleLLMChunk(data);
-                    } else if (data.type === 'llm_complete') {
-                        console.log('LLM streaming completed');
-                        handleLLMComplete(data);
-                    } else if (data.type === 'llm_error') {
-                        console.log('LLM error received');
-                        handleLLMError(data);
-                    } else {
-                        console.log('Message type:', data.type);
+                    switch (data.type) {
+                        case 'transcription':
+                            handleTranscription(data);
+                            break;
+                        case 'llm_start':
+                            handleLLMStart(data);
+                            break;
+                        case 'llm_chunk':
+                            handleLLMChunk(data);
+                            break;
+                        case 'llm_complete':
+                            handleLLMComplete(data);
+                            break;
+                        case 'llm_error':
+                            handleLLMError(data);
+                            break;
+                        case 'murf_audio_chunk': {
+                            if (data.audio) {
+                                base64AudioChunks.push(data.audio);
+                                console.log(`Client ack: received Murf audio chunk #${base64AudioChunks.length}`);
+                            }
+                            break;
+                        }
+                        default:
+                            break;
                     }
                 } catch (error) {
-                    console.log('Non-JSON message:', event.data);
+                    // ignore non-JSON messages
                 }
             };
             
@@ -138,10 +146,8 @@ document.addEventListener('DOMContentLoaded', () => {
             microphoneSource.disconnect();
             microphoneSource = null;
         }
-        if (processor) {
-            processor.disconnect();
-            processor = null;
-        }
+        if (processor) { try { processor.disconnect(); } catch(_){} processor = null; }
+        if (workletNode) { try { workletNode.disconnect(); } catch(_){} workletNode = null; }
         if (stream) {
             stream.getTracks().forEach(track => track.stop());
             stream = null;
@@ -176,29 +182,19 @@ document.addEventListener('DOMContentLoaded', () => {
             microphoneSource = audioContext.createMediaStreamSource(stream);
             microphoneSource.connect(micAnalyser);    // Do not connect to speakers!
             
-            // Create script processor for real-time audio processing
-            // Buffer size should be appropriate for 16kHz
-            processor = audioContext.createScriptProcessor(2048, 1, 1);
-            
-            processor.onaudioprocess = (event) => {
-                if (websocket && websocket.readyState === WebSocket.OPEN) {
-                    const inputData = event.inputBuffer.getChannelData(0);
-                    
-                    // Convert float32 to int16 for smaller data size
-                    // AssemblyAI expects 16-bit PCM data
-                    const int16Data = new Int16Array(inputData.length);
-                    for (let i = 0; i < inputData.length; i++) {
-                        // Convert float32 (-1 to 1) to int16 (-32768 to 32767)
-                        int16Data[i] = Math.max(-32768, Math.min(32767, inputData[i] * 32768));
+            // Prefer AudioWorkletNode (ScriptProcessorNode is deprecated)
+            try {
+                await audioContext.audioWorklet.addModule('/static/recorderWorklet.js');
+                workletNode = new AudioWorkletNode(audioContext, 'recorder-worklet');
+                workletNode.port.onmessage = (e) => {
+                    if (websocket && websocket.readyState === WebSocket.OPEN) {
+                        websocket.send(e.data);
                     }
-                    
-                    // Send audio data via WebSocket
-                    websocket.send(int16Data.buffer);
-                }
-            };
-            
-            microphoneSource.connect(processor);
-            processor.connect(audioContext.destination);
+                };
+                microphoneSource.connect(workletNode);
+            } catch (e) {
+                console.error('AudioWorklet init failed');
+            }
             
             startPulseEffect('recording');
             isRecording = true;
@@ -352,17 +348,17 @@ document.addEventListener('DOMContentLoaded', () => {
             
             // Update the transcription display
             transcriptionOutput.innerHTML = displayText;
-            console.log('Updated transcription output:', transcriptionOutput.innerHTML);
+            //console.log('Updated transcription output:', transcriptionOutput.innerHTML);
             
             // Apply styling based on transcription state
             if (turn_is_formatted) {
                 transcriptionOutput.classList.add('formatted');
                 transcriptionOutput.classList.remove('live');
-                console.log('Applied formatted styling');
+                
             } else {
                 transcriptionOutput.classList.add('live');
                 transcriptionOutput.classList.remove('formatted');
-                console.log('Applied live styling');
+                //console.log('Applied live styling');
             }
             
             // Show end of turn indicator
@@ -377,7 +373,7 @@ document.addEventListener('DOMContentLoaded', () => {
             
             // Scroll to show the latest transcription
             transcriptionContainer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-            console.log('Scrolled to transcription');
+            //console.log('Scrolled to transcription');
         } else {
             console.log('No transcript in data');
         }

@@ -299,6 +299,14 @@ class AudioStreamer:
                                         audio_b64 = data.get("audio")
                                         if audio_b64:
                                             print(f"Murf audio chunk (base64): {audio_b64[:80]}...")
+                                            # Forward base64 audio to client
+                                            try:
+                                                await websocket.send_text(json.dumps({
+                                                    "type": "murf_audio_chunk",
+                                                    "audio": audio_b64
+                                                }))
+                                            except Exception as _:
+                                                pass
                                     if data.get("final"):
                                         print("Murf synthesis complete")
                                         break
@@ -434,8 +442,7 @@ async def websocket_audio_endpoint(websocket: WebSocket, session_id: str):
             # Stream audio data to AssemblyAI (no recording)
             await audio_streamer.stream_audio_data(session_id, data)
             
-            # Send acknowledgment
-            await websocket.send_text("Audio data streamed")
+            # No per-chunk server ack to reduce client console noise
             
     except WebSocketDisconnect:
         logging.info(f"WebSocket disconnected for session: {session_id}")
