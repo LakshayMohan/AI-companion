@@ -170,11 +170,11 @@ document.addEventListener('DOMContentLoaded', () => {
             // Connect WebSocket first
             await connectWebSocket();
             
-            // Get microphone stream with 16kHz sample rate for AssemblyAI
+            // Get microphone stream with relaxed constraints for compatibility
             stream = await navigator.mediaDevices.getUserMedia({ 
                 audio: {
-                    sampleRate: { ideal: 16000, exact: 16000 },  // Force 16kHz
-                    channelCount: { ideal: 1, exact: 1 },        // Force mono
+                    sampleRate: { ideal: 16000 },  // Prefer 16kHz, but don't require
+                    channelCount: { ideal: 1 },    // Prefer mono, but don't require
                     echoCancellation: true,
                     noiseSuppression: true
                 } 
