@@ -50,7 +50,6 @@ document.addEventListener('DOMContentLoaded', () => {
             websocket = new WebSocket(wsUrl);
             
             websocket.onopen = () => {
-                console.log('WebSocket connected for audio streaming');
                 websocketStatus.textContent = "WebSocket: Connected";
                 websocketStatus.className = "websocket-status connected";
                 transcriptionStatus.textContent = "Transcription: Active";
@@ -80,8 +79,12 @@ document.addEventListener('DOMContentLoaded', () => {
                         case 'murf_audio_chunk': {
                             if (data.audio) {
                                 base64AudioChunks.push(data.audio);
-                                console.log(`Client ack: received Murf audio chunk #${base64AudioChunks.length}`);
                             }
+                            break;
+                        }
+                        case 'murf_audio_final': {
+                            // Seamless assembled playback: play all saved chunks as one WAV
+                            try { murfFinalReceived = true; playSavedChunks(); } catch (_) {}
                             break;
                         }
                         default:
@@ -101,7 +104,6 @@ document.addEventListener('DOMContentLoaded', () => {
             };
             
             websocket.onclose = () => {
-                console.log('WebSocket disconnected');
                 websocketStatus.textContent = "WebSocket: Disconnected";
                 websocketStatus.className = "websocket-status";
                 transcriptionStatus.textContent = "Transcription: Inactive";
@@ -188,7 +190,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 workletNode = new AudioWorkletNode(audioContext, 'recorder-worklet');
                 workletNode.port.onmessage = (e) => {
                     if (websocket && websocket.readyState === WebSocket.OPEN) {
-                        websocket.send(e.data);
+                        const f32 = e.data;
+                        if (f32 && f32.length) {
+                            const len = f32.length;
+                            const i16 = new Int16Array(len);
+                            for (let i = 0; i < len; i++) {
+                                let s = f32[i];
+                                if (s > 1) s = 1;
+                                else if (s < -1) s = -1;
+                                i16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+                            }
+                            websocket.send(i16.buffer);
+                        }
                     }
                 };
                 microphoneSource.connect(workletNode);
@@ -323,15 +336,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     function handleTranscription(data) {
-        console.log('Handling transcription:', data);
         const { transcript, end_of_turn, turn_is_formatted, turn_order } = data;
         
         if (transcript) {
-            console.log('Processing transcript:', transcript);
             
             // Always show the transcription container
             transcriptionContainer.style.display = "block";
-            console.log('Transcription container displayed');
             
             // Create a more appealing transcription display
             let displayText = transcript;
@@ -348,7 +358,6 @@ document.addEventListener('DOMContentLoaded', () => {
             
             // Update the transcription display
             transcriptionOutput.innerHTML = displayText;
-            //console.log('Updated transcription output:', transcriptionOutput.innerHTML);
             
             // Apply styling based on transcription state
             if (turn_is_formatted) {
@@ -358,7 +367,6 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 transcriptionOutput.classList.add('live');
                 transcriptionOutput.classList.remove('formatted');
-                //console.log('Applied live styling');
             }
             
             // Show end of turn indicator
@@ -366,25 +374,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 transcriptionOutput.innerHTML += ' <span class="end-turn">✓ Complete</span>';
                 statusDisplay.textContent = "Turn completed. Ready for next input.";
                 transcriptionOutput.classList.remove('live');
-                console.log('Turn completed');
             } else {
                 statusDisplay.textContent = "Listening...";
             }
             
             // Scroll to show the latest transcription
             transcriptionContainer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-            //console.log('Scrolled to transcription');
         } else {
-            console.log('No transcript in data');
+            // no-op
         }
     }
 
     // --- LLM Streaming Functions ---
     let currentLLMResponse = "";
+    let murfFinalReceived = false;
     
     function handleLLMStart(data) {
-        console.log('Starting LLM response display');
         currentLLMResponse = "";
+        murfFinalReceived = false;
+        base64AudioChunks = [];
         
         // Show the LLM response container
         llmResponseContainer.style.display = "block";
@@ -412,7 +420,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     function handleLLMComplete(data) {
-        console.log('LLM response completed');
         
         // Remove typing indicator and show final response
         llmResponseOutput.textContent = data.full_response || currentLLMResponse;
@@ -422,9 +429,96 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // Add completion styling
         llmResponseOutput.classList.add('completed');
-        
-        console.log('Final LLM response:', data.full_response || currentLLMResponse);
+        // Fallback: if Murf didn't signal final but we have chunks, play them
+        if (!murfFinalReceived && base64AudioChunks && base64AudioChunks.length > 0) {
+            try { setTimeout(() => playSavedChunks(), 200); } catch(_) {}
+        }
     }
+
+    // ------------------ WAV Assembly for Murf Chunks -----------------
+    function base64ToUint8Array(base64) {
+        const binary = atob(base64);
+        const len = binary.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+        return bytes;
+    }
+
+    function createWavHeader(dataLength, sampleRate = 44100, numChannels = 1, bitDepth = 16) {
+        const blockAlign = (numChannels * bitDepth) / 8;
+        const byteRate = sampleRate * blockAlign;
+        const buffer = new ArrayBuffer(44);
+        const view = new DataView(buffer);
+        function writeStr(offset, str) {
+            for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+        }
+        writeStr(0, "RIFF");
+        view.setUint32(4, 36 + dataLength, true);
+        writeStr(8, "WAVE");
+        writeStr(12, "fmt ");
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true);
+        view.setUint16(22, numChannels, true);
+        view.setUint32(24, sampleRate, true);
+        view.setUint32(28, byteRate, true);
+        view.setUint16(32, blockAlign, true);
+        view.setUint16(34, bitDepth, true);
+        writeStr(36, "data");
+        view.setUint32(40, dataLength, true);
+        return new Uint8Array(buffer);
+    }
+
+    function playCombinedWavChunks(base64Chunks) {
+        if (!base64Chunks || base64Chunks.length === 0) return;
+        const pcmParts = [];
+        for (let i = 0; i < base64Chunks.length; i++) {
+            const bytes = base64ToUint8Array(base64Chunks[i]);
+            if (i === 0) {
+                pcmParts.push(bytes.slice(44));
+            } else {
+                pcmParts.push(bytes);
+            }
+        }
+        const totalPcmLength = pcmParts.reduce((sum, arr) => sum + arr.length, 0);
+        const totalPcm = new Uint8Array(totalPcmLength);
+        let offset = 0;
+        for (const part of pcmParts) {
+            totalPcm.set(part, offset);
+            offset += part.length;
+        }
+        const wavHeader = createWavHeader(totalPcm.length, 44100, 1, 16);
+        const finalWav = new Uint8Array(wavHeader.length + totalPcm.length);
+        finalWav.set(wavHeader, 0);
+        finalWav.set(totalPcm, wavHeader.length);
+        const blob = new Blob([finalWav], { type: "audio/wav" });
+        const url = URL.createObjectURL(blob);
+
+        try {
+            disconnectPlayback();
+            responseSourceNode.connect(playbackAnalyser);
+            playbackAnalyser.connect(audioContext.destination);
+        } catch (_) {}
+
+        responseAudio.src = url;
+        responseAudio.crossOrigin = "anonymous";
+        startPulseEffect('playback');
+        stopAudioBtn.style.display = 'block';
+        responseAudio.play().catch(() => {});
+        responseAudio.onended = () => {
+            stopPulseEffect();
+            stopAudioBtn.style.display = 'none';
+            statusDisplay.textContent = "Ready for your next question.";
+            disconnectPlayback();
+        };
+    }
+
+    function playSavedChunks() {
+        const saved = base64AudioChunks;
+        if (saved && saved.length > 0) {
+            playCombinedWavChunks(saved);
+        }
+    }
+    // ------------------ END WAV Assembly -----------------
     
     function handleLLMError(data) {
         console.error('LLM error:', data.error);

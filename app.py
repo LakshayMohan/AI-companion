@@ -186,7 +186,7 @@ class AudioStreamer:
                 try:
                     for message in pending_messages:
                         await session_websocket.send_text(json.dumps(message))
-                        print(f"✅ Sent transcription to client: {message['transcript']}")
+                        print(f"Sent transcription to client: {message['transcript']}")
                     # Clear the pending messages after sending
                     self.pending_transcriptions[session_id] = []
                 except Exception as e:
@@ -195,7 +195,7 @@ class AudioStreamer:
         # Check if we have a final transcript to process with LLM
         if hasattr(self, 'final_transcripts') and session_id in self.final_transcripts:
             final_transcript = self.final_transcripts[session_id]
-            print(f"🤖 Processing final transcript with LLM: {final_transcript}")
+            print(f"Processing final transcript with LLM: {final_transcript}")
             
             # Start LLM streaming in background
             asyncio.create_task(self.stream_llm_response(session_id, final_transcript, session_websocket))
@@ -243,7 +243,7 @@ class AudioStreamer:
                 print("❌ Gemini API key not set")
                 return
             
-            print(f"🤖 Starting LLM streaming for: {user_text}")
+            print(f"Starting LLM streaming for: {user_text}")
             
             # Add user message to chat history
             if session_id not in chat_history:
@@ -298,17 +298,23 @@ class AudioStreamer:
                                     if "audio" in data:
                                         audio_b64 = data.get("audio")
                                         if audio_b64:
-                                            print(f"Murf audio chunk (base64): {audio_b64[:80]}...")
                                             # Forward base64 audio to client
                                             try:
                                                 await websocket.send_text(json.dumps({
                                                     "type": "murf_audio_chunk",
                                                     "audio": audio_b64
                                                 }))
-                                            except Exception as _:
+                                            except Exception:
                                                 pass
                                     if data.get("final"):
                                         print("Murf synthesis complete")
+                                        try:
+                                            await websocket.send_text(json.dumps({
+                                                "type": "murf_audio_final",
+                                                "context_id": MURF_CONTEXT_ID
+                                            }))
+                                        except Exception:
+                                            pass
                                         break
                             except Exception as ex:
                                 print(f"❌ Murf receiver error: {ex}")
