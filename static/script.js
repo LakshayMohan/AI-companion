@@ -190,17 +190,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 workletNode = new AudioWorkletNode(audioContext, 'recorder-worklet');
                 workletNode.port.onmessage = (e) => {
                     if (websocket && websocket.readyState === WebSocket.OPEN) {
-                        const f32 = e.data;
-                        if (f32 && f32.length) {
-                            const len = f32.length;
-                            const i16 = new Int16Array(len);
-                            for (let i = 0; i < len; i++) {
-                                let s = f32[i];
-                                if (s > 1) s = 1;
-                                else if (s < -1) s = -1;
-                                i16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-                            }
-                            websocket.send(i16.buffer);
+                        // Forward PCM16 buffer directly from the worklet
+                        if (e.data && e.data.byteLength) {
+                            websocket.send(e.data);
                         }
                     }
                 };
@@ -273,6 +265,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
             responseAudio.src = `/proxy-audio/?url=${encodeURIComponent(audioUrl)}`;
             responseAudio.crossOrigin = "anonymous";
+            responseAudio.controls = true;
+            responseAudio.style.display = 'block';
             startPulseEffect('playback');
             stopAudioBtn.style.display = 'block';
             await responseAudio.play();
@@ -407,6 +401,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     function handleLLMChunk(data) {
+        // Ensure container visible even if start event was missed
+        llmResponseContainer.style.display = "block";
         if (data.text) {
             currentLLMResponse += data.text;
             llmResponseOutput.textContent = currentLLMResponse;
@@ -420,6 +416,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     function handleLLMComplete(data) {
+        // Ensure container visible even if start event was missed
+        llmResponseContainer.style.display = "block";
         
         // Remove typing indicator and show final response
         llmResponseOutput.textContent = data.full_response || currentLLMResponse;
@@ -501,8 +499,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
         responseAudio.src = url;
         responseAudio.crossOrigin = "anonymous";
+        responseAudio.controls = true;
+        responseAudio.style.display = 'block';
         startPulseEffect('playback');
         stopAudioBtn.style.display = 'block';
+        audioContext.resume().catch(() => {});
         responseAudio.play().catch(() => {});
         responseAudio.onended = () => {
             stopPulseEffect();
@@ -524,6 +525,7 @@ document.addEventListener('DOMContentLoaded', () => {
         console.error('LLM error:', data.error);
         
         // Show error in LLM response area
+        llmResponseContainer.style.display = "block";
         llmResponseOutput.textContent = `Error: ${data.error}`;
         llmResponseOutput.classList.add('error');
         

@@ -3,7 +3,7 @@ import os
 import logging
 import json
 from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -462,6 +462,16 @@ async def websocket_audio_endpoint(websocket: WebSocket, session_id: str):
 @app.get("/")
 def serve_index():
     return FileResponse("static/index.html")
+
+@app.get("/favicon.ico")
+async def favicon():
+    """Serve a tiny transparent PNG to satisfy favicon requests."""
+    import base64
+    transparent_png_base64 = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAOQWv3kAAAAASUVORK5CYII="
+    )
+    png_bytes = base64.b64decode(transparent_png_base64)
+    return Response(content=png_bytes, media_type="image/png")
 
 @app.get("/proxy-audio/")
 async def proxy_audio(url: str):

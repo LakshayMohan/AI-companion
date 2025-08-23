@@ -5,6 +5,7 @@
     <title>AI Voice Companion</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600&display=swap" rel="stylesheet">
+    <link rel="icon" href="/favicon.ico">
     <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
@@ -27,7 +28,7 @@
         <button id="stopAudioBtn" class="stop-audio-button" style="display: none;">Stop AI Audio</button>
 
         <p id="status" class="status-text">Ready to start</p>
-        <audio id="responseAudio" style="display: none;"></audio>
+        <audio id="responseAudio" controls style="display: none;"></audio>
         <div id="transcription-container" style="display: none;">
             <h4>Your question:</h4>
             <div id="transcriptionOutput" class="response-box user-box"></div>
