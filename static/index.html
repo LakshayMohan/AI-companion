@@ -10,8 +10,11 @@
 </head>
 <body>
     <div class="background-title">The Machine Mind</div>
+    <button id="switchSessionBtn" class="switch-session top-right">New Session</button>
     <div class="agent-container">
-        <h1>AI Companion</h1>
+        <div class="agent-header">
+            <h1>AI Companion</h1>
+        </div>
         <p>Tap to speak, and receive your AI-powered response.</p>
         <div id="controls">
             <canvas id="audioVisualizer" width="180" height="180"></canvas>
@@ -29,15 +32,19 @@
 
         <p id="status" class="status-text">Ready to start</p>
         <audio id="responseAudio" controls style="display: none;"></audio>
-        <div id="transcription-container" style="display: none;">
-            <h4>Your question:</h4>
-            <div id="transcriptionOutput" class="response-box user-box"></div>
-        </div>
-        <div id="llm-response-container" style="display: none;">
-            <h4>AI's response:</h4>
-            <div id="llmResponseOutput" class="response-box llm-box"></div>
+        <div id="chat-container" class="chat-container">
+            <!-- conversation bubbles will be appended here -->
         </div>
     </div>
     <script src="/static/script.js"></script>
+    <div id="confirmModal" class="confirm-modal top-right" style="display:none;">
+        <div class="confirm-box">
+            <p>Start a new session? This will clear current chat history.</p>
+            <div class="confirm-actions">
+                <button id="confirmYes" class="test-button">Yes</button>
+                <button id="confirmNo" class="test-button">No</button>
+            </div>
+        </div>
+    </div>
 </body>
 </html>

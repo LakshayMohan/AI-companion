@@ -2,6 +2,7 @@
 import os
 import logging
 import json
+import base64
 from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -13,6 +14,7 @@ import assemblyai as aai
 import google.generativeai as genai
 from collections import defaultdict
 import asyncio
+import secrets
 import wave
 import io
 import time
@@ -54,6 +56,18 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # --- Session Chat Memory ---
 chat_history = defaultdict(list)
+MAX_HISTORY_LENGTH = 40  # max messages (user+model) to keep per session
+
+def append_to_history(session_id: str, role: str, text: str):
+    """Append a message to session history and trim to MAX_HISTORY_LENGTH."""
+    if not session_id:
+        return
+    entry = {"role": role, "parts": [text], "timestamp": datetime.utcnow().isoformat()}
+    chat_history[session_id].append(entry)
+    # Trim oldest messages if over limit
+    if len(chat_history[session_id]) > MAX_HISTORY_LENGTH:
+        # drop the oldest entries
+        chat_history[session_id] = chat_history[session_id][-MAX_HISTORY_LENGTH:]
 
 
 
@@ -62,7 +76,12 @@ class AudioStreamer:
     def __init__(self):
         self.active_sessions = {}
         self.streaming_clients = {}  # Store AssemblyAI streaming clients per session
-    
+        # Transient per-session storage
+        self.session_websockets = {}
+        self.pending_transcriptions = defaultdict(list)
+        self.final_transcripts = {}
+        self.murf_audio_chunks = defaultdict(list)
+
     async def start_streaming(self, session_id: str, websocket=None):
         """Start a new audio streaming session with AssemblyAI transcription (no recording)"""
         self.websocket = websocket
@@ -234,6 +253,11 @@ class AudioStreamer:
             del self.pending_transcriptions[session_id]
         if hasattr(self, 'final_transcripts') and session_id in self.final_transcripts:
             del self.final_transcripts[session_id]
+        if session_id in self.murf_audio_chunks:
+            try:
+                del self.murf_audio_chunks[session_id]
+            except Exception:
+                pass
         return session_id
     
     async def stream_llm_response(self, session_id: str, user_text: str, websocket):
@@ -245,10 +269,8 @@ class AudioStreamer:
             
             print(f"Starting LLM streaming for: {user_text}")
             
-            # Add user message to chat history
-            if session_id not in chat_history:
-                chat_history[session_id] = []
-            chat_history[session_id].append({"role": "user", "parts": [user_text]})
+            # Add user message to chat history (trimmed)
+            append_to_history(session_id, "user", user_text)
             
             # Initialize Gemini model
             model = genai.GenerativeModel('gemini-1.5-flash')
@@ -298,6 +320,11 @@ class AudioStreamer:
                                     if "audio" in data:
                                         audio_b64 = data.get("audio")
                                         if audio_b64:
+                                            # store per-session chunk for possible later retrieval
+                                            try:
+                                                self.murf_audio_chunks[session_id].append(audio_b64)
+                                            except Exception:
+                                                pass
                                             # Forward base64 audio to client
                                             try:
                                                 await websocket.send_text(json.dumps({
@@ -308,11 +335,55 @@ class AudioStreamer:
                                                 pass
                                     if data.get("final"):
                                         print("Murf synthesis complete")
+                                        # Attempt to assemble the collected chunks into a single WAV
+                                        final_b64 = None
                                         try:
-                                            await websocket.send_text(json.dumps({
+                                            chunks = self.murf_audio_chunks.get(session_id, [])
+                                            pcm_parts = []
+                                            sr = None
+                                            nch = None
+                                            sw = None
+                                            for b64 in chunks:
+                                                raw = base64.b64decode(b64)
+                                                try:
+                                                    with wave.open(io.BytesIO(raw), 'rb') as wf:
+                                                        if sr is None:
+                                                            sr = wf.getframerate()
+                                                            nch = wf.getnchannels()
+                                                            sw = wf.getsampwidth()
+                                                        pcm = wf.readframes(wf.getnframes())
+                                                        pcm_parts.append(pcm)
+                                                except wave.Error:
+                                                    # not a full wav, append raw
+                                                    pcm_parts.append(raw)
+
+                                            out_buf = io.BytesIO()
+                                            with wave.open(out_buf, 'wb') as out_wf:
+                                                out_wf.setnchannels(nch or 1)
+                                                out_wf.setsampwidth(sw or 2)
+                                                out_wf.setframerate(sr or 44100)
+                                                for part in pcm_parts:
+                                                    out_wf.writeframes(part)
+                                            final_bytes = out_buf.getvalue()
+                                            final_b64 = base64.b64encode(final_bytes).decode('ascii')
+                                        except Exception as ex:
+                                            logging.error(f"Error assembling final Murf WAV: {ex}")
+
+                                        try:
+                                            payload = {
                                                 "type": "murf_audio_final",
-                                                "context_id": MURF_CONTEXT_ID
-                                            }))
+                                                "context_id": MURF_CONTEXT_ID,
+                                                "chunk_count": len(self.murf_audio_chunks.get(session_id, []))
+                                            }
+                                            if final_b64:
+                                                payload["audio_b64"] = final_b64
+                                            await websocket.send_text(json.dumps(payload))
+                                        except Exception:
+                                            pass
+                                        # Clean up stored chunks for this session to free memory
+                                        try:
+                                            if session_id in self.murf_audio_chunks:
+                                                del self.murf_audio_chunks[session_id]
                                         except Exception:
                                             pass
                                         break
@@ -410,9 +481,9 @@ class AudioStreamer:
             except asyncio.TimeoutError:
                 murf_task.cancel()
 
-            # Add AI response to chat history after finishing
+            # Add AI response to chat history after finishing (trimmed)
             if full_response_ref["text"]:
-                chat_history[session_id].append({"role": "model", "parts": [full_response_ref["text"]]})
+                append_to_history(session_id, "model", full_response_ref["text"])
             
         except Exception as e:
             print(f"❌ Error in LLM streaming: {e}")
@@ -488,6 +559,37 @@ async def proxy_audio(url: str):
             logging.error(f"Audio proxy failed: {e.request.url} - {e}")
             raise HTTPException(status_code=502, detail="Could not fetch audio.")
 
+
+@app.get("/agent/chat/history/{session_id}")
+async def get_chat_history(session_id: str):
+    """Return in-memory chat history for a session."""
+    # If session is unknown, return an empty history instead of 404 to simplify client logic
+    if session_id not in chat_history:
+        return {"history": []}
+    return {"history": chat_history[session_id]}
+
+
+@app.post("/session/switch")
+async def switch_session(payload: dict):
+    """Switch to a new session; optionally clear an old session's memory.
+
+    Expected JSON: { "old_session_id": "session_xxx" }
+    Returns: { "session_id": "new_session_id" }
+    """
+    old = payload.get("old_session_id") if isinstance(payload, dict) else None
+    if old:
+        # clear chat history and stop streaming for old session
+        if old in chat_history:
+            del chat_history[old]
+        try:
+            await audio_streamer.stop_streaming(old)
+        except Exception:
+            pass
+
+    new_id = f"session_{int(time.time() * 1000)}_{secrets.token_hex(4)}"
+    chat_history[new_id] = []
+    return {"session_id": new_id}
+
 # --- TTS Endpoint ---
 @app.post("/tts")
 async def generate_tts(text: str):
@@ -545,7 +647,7 @@ async def agent_chat(session_id: str, file: UploadFile = File(...)):
             return JSONResponse(status_code=503, content={"error": "Could not process your audio.", "audio_url": fallback_audio_url})
         return JSONResponse(status_code=503, content={"error": "Speech-to-text unavailable."})
 
-    chat_history[session_id].append({"role": "user", "parts": [user_text]})
+    append_to_history(session_id, "user", user_text)
 
     try:
         if not GEMINI_API_KEY: raise ValueError("Gemini API key not set.")
@@ -562,7 +664,7 @@ async def agent_chat(session_id: str, file: UploadFile = File(...)):
             return JSONResponse(status_code=503, content={"error": "AI Model unavailable.", "audio_url": fallback_audio_url, "transcription": user_text})
         return JSONResponse(status_code=503, content={"error": "AI Model unavailable."})
 
-    chat_history[session_id].append({"role": "model", "parts": [llm_text]})
+    append_to_history(session_id, "model", llm_text)
 
     try:
         if not MURF_API_KEY: raise ValueError("Murf API key not set.")

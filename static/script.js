@@ -10,6 +10,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const transcriptionOutput = document.getElementById("transcriptionOutput");
     const llmResponseContainer = document.getElementById("llm-response-container");
     const llmResponseOutput = document.getElementById("llmResponseOutput");
+    const chatContainer = document.getElementById('chat-container');
+    const switchSessionBtn = document.getElementById('switchSessionBtn');
     const stopAudioBtn = document.getElementById('stopAudioBtn');
     const websocketStatus = document.getElementById('websocket-status');
     const transcriptionStatus = document.getElementById('transcription-status');
@@ -39,7 +41,131 @@ document.addEventListener('DOMContentLoaded', () => {
         const params = new URLSearchParams(window.location.search);
         sessionId = params.get('session_id') || `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         window.history.replaceState({ path: `${window.location.pathname}?session_id=${sessionId}` }, '', `${window.location.pathname}?session_id=${sessionId}`);
+        // Load any existing chat history for this session
+        loadChatHistory(sessionId).catch(() => {});
     };
+
+    // Switch session button -> show confirmation modal, then create new session and clear UI + memory
+    if (switchSessionBtn) {
+        const confirmModal = document.getElementById('confirmModal');
+        const confirmYesBtn = document.getElementById('confirmYes');
+        const confirmNoBtn = document.getElementById('confirmNo');
+
+        // Open modal on click and position the confirm box over the switch button
+        function hideConfirmModal() {
+            if (confirmModal) confirmModal.style.display = 'none';
+            if (confirmModal) {
+                const cb = confirmModal.querySelector('.confirm-box');
+                if (cb) {
+                    cb.style.position = '';
+                    cb.style.left = '';
+                    cb.style.top = '';
+                    cb.style.right = '';
+                }
+            // clear overlay hole variables
+            confirmModal.style.removeProperty('--hole-left');
+            confirmModal.style.removeProperty('--hole-top');
+            confirmModal.style.removeProperty('--hole-radius');
+            }
+        }
+
+        switchSessionBtn.addEventListener('click', () => {
+            if (!confirmModal) return;
+            // show overlay
+            confirmModal.style.display = 'block';
+            const confirmBox = confirmModal.querySelector('.confirm-box');
+            if (!confirmBox) return;
+
+            // compute button rect and position the box so it appears above/beside the button
+            const rect = switchSessionBtn.getBoundingClientRect();
+
+            // ensure the box is rendered so offsetWidth is available
+            confirmBox.style.position = 'fixed';
+            confirmBox.style.left = '0px';
+            confirmBox.style.top = '0px';
+            // allow browser to paint and measure
+            const boxW = confirmBox.offsetWidth || 320;
+            const boxH = confirmBox.offsetHeight || 120;
+
+            // prefer to place the box just below the button; if not enough space, place above
+            const spaceBelow = window.innerHeight - rect.bottom;
+            let top = rect.bottom + 8; // below button
+            if (spaceBelow < boxH + 12) {
+                top = rect.top - boxH - 8; // place above
+            }
+
+            // right-align box to button's right edge, but keep inside viewport
+            let left = rect.right - boxW;
+            if (left < 8) left = 8;
+            if (left + boxW > window.innerWidth - 8) left = window.innerWidth - boxW - 8;
+
+            confirmBox.style.left = `${left}px`;
+            confirmBox.style.top = `${Math.max(8, top)}px`;
+            confirmBox.style.right = '';
+
+            // decide caret orientation and add class
+            confirmBox.classList.remove('below', 'above', 'animate-pop');
+            if (top > rect.top) {
+                // we placed below
+                confirmBox.classList.add('below');
+                confirmBox.style.setProperty('--pop-y', '12px');
+            } else {
+                confirmBox.classList.add('above');
+                confirmBox.style.setProperty('--pop-y', '-12px');
+            }
+
+            // set overlay hole variables on the modal so the background is transparent around the button
+            const holeX = rect.left + rect.width / 2;
+            const holeY = rect.top + rect.height / 2;
+            const holeRadius = Math.max(rect.width, rect.height) * 0.9;
+            confirmModal.style.setProperty('--hole-left', `${holeX}px`);
+            confirmModal.style.setProperty('--hole-top', `${holeY}px`);
+            confirmModal.style.setProperty('--hole-radius', `${holeRadius}px`);
+
+            // set caret horizontal position (approx) via left on ::after by adjusting a padding-left variable
+            // we position caret via left offset from the confirm box's left; compute relative
+            const caretLeft = Math.min(boxW - 36, Math.max(18, rect.right - left - 12));
+            confirmBox.style.setProperty('--caret-left', `${caretLeft}px`);
+
+            // animate pop
+            setTimeout(() => confirmBox.classList.add('animate-pop'), 10);
+        });
+
+        // Cancel: just hide the modal
+        if (confirmNoBtn) {
+            confirmNoBtn.addEventListener('click', () => {
+                hideConfirmModal();
+            });
+        }
+
+        // Confirm: call server to switch session and clear UI
+        if (confirmYesBtn) {
+            confirmYesBtn.addEventListener('click', async () => {
+                // hide immediately while processing
+                hideConfirmModal();
+                try {
+                    const res = await fetch('/session/switch', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ old_session_id: sessionId })
+                    });
+                    const data = await res.json();
+                    if (data.session_id) {
+                        // close websocket and reset UI
+                        disconnectWebSocket();
+                        sessionId = data.session_id;
+                        window.history.replaceState({}, '', `${window.location.pathname}?session_id=${sessionId}`);
+                        // fully reset UI
+                        resetAllUI();
+                    } else {
+                        statusDisplay.textContent = 'Could not start new session.';
+                    }
+                } catch (e) {
+                    console.error('Failed to switch session', e);
+                    statusDisplay.textContent = 'Could not switch session.';
+                }
+            });
+        }
+    }
 
     // --- WebSocket Audio Streaming ---
     async function connectWebSocket() {
@@ -83,8 +209,39 @@ document.addEventListener('DOMContentLoaded', () => {
                             break;
                         }
                         case 'murf_audio_final': {
-                            // Seamless assembled playback: play all saved chunks as one WAV
-                            try { murfFinalReceived = true; playSavedChunks(); } catch (_) {}
+                            // If server provided a fully assembled base64 WAV, play it directly
+                            murfFinalReceived = true;
+                            if (data.audio_b64) {
+                                try {
+                                    const bytes = base64ToUint8Array(data.audio_b64);
+                                    const blob = new Blob([bytes], { type: 'audio/wav' });
+                                    const url = URL.createObjectURL(blob);
+                                    // Clear any saved chunks to free memory
+                                    base64AudioChunks = [];
+                                    disconnectPlayback();
+                                    responseSourceNode.connect(playbackAnalyser);
+                                    playbackAnalyser.connect(audioContext.destination);
+                                    responseAudio.src = url;
+                                    responseAudio.crossOrigin = 'anonymous';
+                                    responseAudio.controls = true;
+                                    responseAudio.style.display = 'block';
+                                    startPulseEffect('playback');
+                                    stopAudioBtn.style.display = 'block';
+                                    audioContext.resume().catch(() => {});
+                                    responseAudio.play().catch(() => {});
+                                    responseAudio.onended = () => {
+                                        stopPulseEffect();
+                                        stopAudioBtn.style.display = 'none';
+                                        statusDisplay.textContent = 'Ready for your next question.';
+                                        disconnectPlayback();
+                                    };
+                                } catch (e) {
+                                    // fallback to playing accumulated chunks
+                                    try { playSavedChunks(); } catch (_) {}
+                                }
+                            } else {
+                                try { playSavedChunks(); } catch (_) {}
+                            }
                             break;
                         }
                         default:
@@ -123,6 +280,43 @@ document.addEventListener('DOMContentLoaded', () => {
             websocket.close();
             websocket = null;
         }
+    }
+
+    // ---------------- Chat UI helpers ----------------
+    function appendUserBubble(text) {
+        if (!chatContainer) return;
+        const el = document.createElement('div');
+        el.className = 'chat-bubble user';
+        el.textContent = text;
+        chatContainer.appendChild(el);
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+
+    let currentAIBubble = null;
+    function appendAIBubbleStart() {
+        if (!chatContainer) return;
+        const el = document.createElement('div');
+        el.className = 'chat-bubble ai';
+        el.textContent = '';
+        chatContainer.appendChild(el);
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+        currentAIBubble = el;
+    }
+
+    function appendAIBubbleChunk(text) {
+        if (!currentAIBubble) appendAIBubbleStart();
+        // append text progressively
+        currentAIBubble.textContent = (currentAIBubble.textContent || '') + text;
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+
+    function finalizeAIBubble(text) {
+        if (!currentAIBubble) {
+            appendAIBubbleStart();
+        }
+        if (text) currentAIBubble.textContent = text;
+        currentAIBubble = null;
+        chatContainer.scrollTop = chatContainer.scrollHeight;
     }
 
     // --- Record Button ---
@@ -316,12 +510,68 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function resetUIState() {
-        transcriptionContainer.style.display = "none";
-        llmResponseContainer.style.display = "none";
-        transcriptionOutput.textContent = "";
-        llmResponseOutput.textContent = "";
+    // Keep chat intact for current session; this resets ephemeral UI only
+    if (transcriptionContainer) transcriptionContainer.style.display = "none";
+    if (llmResponseContainer) llmResponseContainer.style.display = "none";
+    if (transcriptionOutput) transcriptionOutput.textContent = "";
+    if (llmResponseOutput) llmResponseOutput.textContent = "";
         statusDisplay.classList.remove('error');
         stopAudioBtn.style.display = 'none';
+    }
+
+    // Full UI reset when switching sessions: stop recording, stop playback, clear visuals and buffers
+    function resetAllUI() {
+        // Stop any ongoing recording
+        try { if (isRecording) stopRecording(); } catch (e) {}
+        // Disconnect any recording nodes
+        try { disconnectRecording(); } catch (e) {}
+        // Stop playback and clear audio element
+        try {
+            responseAudio.pause();
+            responseAudio.currentTime = 0;
+            responseAudio.src = '';
+            responseAudio.style.display = 'none';
+        } catch (e) {}
+        try { disconnectPlayback(); } catch (e) {}
+        // Clear UI elements
+        try { chatContainer.innerHTML = ''; } catch (e) {}
+        try { base64AudioChunks = []; } catch (e) {}
+        murfFinalReceived = false;
+        try { if (transcriptionOutput) transcriptionOutput.textContent = ''; } catch (e) {}
+        try { if (llmResponseOutput) llmResponseOutput.textContent = ''; } catch (e) {}
+        try { if (transcriptionContainer) transcriptionContainer.style.display = 'none'; } catch (e) {}
+        try { if (llmResponseContainer) llmResponseContainer.style.display = 'none'; } catch (e) {}
+        // Reset buttons and visual indicators
+        try { updateUIRecording(false); } catch (e) {}
+        try { stopPulseEffect(); } catch (e) {}
+        try { websocketStatus.textContent = 'WebSocket: Disconnected'; websocketStatus.className = 'websocket-status'; } catch (e) {}
+        try { transcriptionStatus.textContent = 'Transcription: Inactive'; transcriptionStatus.className = 'transcription-status'; } catch (e) {}
+        try { stopAudioBtn.style.display = 'none'; } catch (e) {}
+        try { statusDisplay.textContent = 'New session started.'; } catch (e) {}
+    }
+
+    async function loadChatHistory(sid) {
+        try {
+            const res = await fetch(`/agent/chat/history/${encodeURIComponent(sid)}`);
+            if (!res.ok) return;
+            const data = await res.json();
+            if (data && data.history && Array.isArray(data.history)) {
+                chatContainer.innerHTML = '';
+                for (const msg of data.history) {
+                    if (msg.role === 'user') {
+                        const text = (msg.parts && msg.parts.join(' ')) || '';
+                        appendUserBubble(text);
+                    } else if (msg.role === 'model') {
+                        const text = (msg.parts && msg.parts.join(' ')) || '';
+                        appendAIBubbleStart();
+                        appendAIBubbleChunk(text);
+                        finalizeAIBubble(text);
+                    }
+                }
+            }
+        } catch (e) {
+            // ignore
+        }
     }
     function updateUIRecording(isRec) {
         recordBtn.classList.toggle('recording', isRec);
@@ -374,6 +624,10 @@ document.addEventListener('DOMContentLoaded', () => {
             
             // Scroll to show the latest transcription
             transcriptionContainer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            // show partial as a user bubble (only on end_of_turn commit)
+            if (end_of_turn) {
+                appendUserBubble(transcript);
+            }
         } else {
             // no-op
         }
@@ -387,46 +641,59 @@ document.addEventListener('DOMContentLoaded', () => {
         currentLLMResponse = "";
         murfFinalReceived = false;
         base64AudioChunks = [];
-        
-        // Show the LLM response container
-        llmResponseContainer.style.display = "block";
-        llmResponseOutput.textContent = "";
+        // If the server provided the user's transcript, show it as a user bubble
+        if (data && data.transcript) {
+            appendUserBubble(data.transcript);
+        }
+
+        // Show the LLM response area via chat bubble
+        appendAIBubbleStart();
         
         // Update status
         statusDisplay.textContent = "AI is thinking...";
         statusDisplay.classList.remove('error');
         
-        // Scroll to show the LLM response area
-        llmResponseContainer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    // Scroll to show the LLM response area
+    if (llmResponseContainer) llmResponseContainer.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
     
     function handleLLMChunk(data) {
-        // Ensure container visible even if start event was missed
-        llmResponseContainer.style.display = "block";
+    // Ensure container visible even if start event was missed
+    if (llmResponseContainer) llmResponseContainer.style.display = "block";
         if (data.text) {
             currentLLMResponse += data.text;
-            llmResponseOutput.textContent = currentLLMResponse;
-            
-            // Add typing indicator
-            llmResponseOutput.innerHTML = currentLLMResponse + '<span class="typing-indicator">|</span>';
-            
-            // Scroll to keep the latest text visible
-            llmResponseOutput.scrollTop = llmResponseOutput.scrollHeight;
+            appendAIBubbleChunk(data.text);
         }
     }
     
     function handleLLMComplete(data) {
         // Ensure container visible even if start event was missed
-        llmResponseContainer.style.display = "block";
-        
-        // Remove typing indicator and show final response
-        llmResponseOutput.textContent = data.full_response || currentLLMResponse;
-        
+        if (llmResponseContainer) llmResponseContainer.style.display = "block";
+
+        // Finalize AI bubble and show final response text
+        finalizeAIBubble(data.full_response || currentLLMResponse);
+
         // Update status
         statusDisplay.textContent = "AI response completed. Ready for next input.";
-        
-        // Add completion styling
-        llmResponseOutput.classList.add('completed');
+
+        // Trigger a subtle glow/spark on the agent container as a reward
+        try {
+            const agent = document.querySelector('.agent-container');
+            if (agent) {
+                agent.classList.remove('spark');
+                // force reflow to restart animation
+                // eslint-disable-next-line no-unused-expressions
+                void agent.offsetWidth;
+                agent.classList.add('spark');
+                // remove the class after animation completes (1.6s)
+                setTimeout(() => agent.classList.remove('spark'), 1600);
+            }
+        } catch (e) {}
+
+        // Add completion styling if element present
+        if (llmResponseOutput && llmResponseOutput.classList) {
+            llmResponseOutput.classList.add('completed');
+        }
         // Fallback: if Murf didn't signal final but we have chunks, play them
         if (!murfFinalReceived && base64AudioChunks && base64AudioChunks.length > 0) {
             try { setTimeout(() => playSavedChunks(), 200); } catch(_) {}
@@ -471,7 +738,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const pcmParts = [];
         for (let i = 0; i < base64Chunks.length; i++) {
             const bytes = base64ToUint8Array(base64Chunks[i]);
-            if (i === 0) {
+            // strip WAV header if present ("RIFF")
+            if (bytes.length > 44 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) {
                 pcmParts.push(bytes.slice(44));
             } else {
                 pcmParts.push(bytes);
@@ -509,6 +777,8 @@ document.addEventListener('DOMContentLoaded', () => {
             stopPulseEffect();
             stopAudioBtn.style.display = 'none';
             statusDisplay.textContent = "Ready for your next question.";
+            // clear stored chunks after playback
+            base64AudioChunks = [];
             disconnectPlayback();
         };
     }
@@ -517,6 +787,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const saved = base64AudioChunks;
         if (saved && saved.length > 0) {
             playCombinedWavChunks(saved);
+            // clear stored chunks after starting playback (safety)
+            base64AudioChunks = [];
         }
     }
     // ------------------ END WAV Assembly -----------------
@@ -525,9 +797,11 @@ document.addEventListener('DOMContentLoaded', () => {
         console.error('LLM error:', data.error);
         
         // Show error in LLM response area
-        llmResponseContainer.style.display = "block";
-        llmResponseOutput.textContent = `Error: ${data.error}`;
-        llmResponseOutput.classList.add('error');
+        if (llmResponseContainer) llmResponseContainer.style.display = "block";
+        if (llmResponseOutput) {
+            llmResponseOutput.textContent = `Error: ${data.error}`;
+            if (llmResponseOutput.classList) llmResponseOutput.classList.add('error');
+        }
         
         // Update status
         statusDisplay.textContent = "AI encountered an error.";
