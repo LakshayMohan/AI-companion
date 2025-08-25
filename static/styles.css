@@ -502,7 +502,7 @@ h4 {
     overflow: hidden;
 }
 .avatar.user { background: linear-gradient(135deg,#2f6973,#00d1ff); }
-.avatar.ai { avatar-size : 30px; }
+.avatar.ai { --avatar-size : 30px; }
 
 /* Persona block */
 .persona { margin-top: 8px; text-align: center; color: #cfcfe0; }
