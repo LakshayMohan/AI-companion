@@ -474,6 +474,63 @@ h4 {
     border: 1px solid rgba(0,255,136,0.06);
 }
 
+/* Avatars */
+.chat-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+}
+.chat-row.user {
+    justify-content: flex-start;
+}
+.chat-row.user .avatar { order: 0; }
+.chat-row.user .chat-bubble { order: 1; margin-left: 8px; }
+.chat-row.ai { 
+    justify-content: flex-end;
+}
+.chat-row.ai .avatar { order: 1; }
+.chat-row.ai .chat-bubble { order: 0; margin-right: 8px; }
+.avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 32px;
+    font-size: 14px;
+    overflow: hidden;
+}
+.avatar.user { background: linear-gradient(135deg,#2f6973,#00d1ff); }
+.avatar.ai { avatar-size : 30px; }
+
+/* Persona block */
+.persona { margin-top: 8px; text-align: center; color: #cfcfe0; }
+.persona-name { font-weight: 600; color: #fff; }
+.persona-desc { font-size: 0.9rem; color: #9fa0b2; margin-top: 4px; }
+/* avatar sizing variable: used for chat avatars and persona images */
+:root {
+    --avatar-size: 30px; /* slightly smaller to comfortably fit persona area */
+}
+
+/* Ensure persona block lays out avatar + text and constrain images */
+.persona {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+}
+
+.persona img, .avatar img {
+    max-width: var(--avatar-size);
+    max-height: var(--avatar-size);
+    width: var(--avatar-size);
+    height: var(--avatar-size);
+    border-radius: 50%;
+    display: inline-block;
+    object-fit: cover;
+}
+
 .confirm-modal {
     position: fixed;
     inset: 0;

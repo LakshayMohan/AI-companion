@@ -285,22 +285,36 @@ document.addEventListener('DOMContentLoaded', () => {
     // ---------------- Chat UI helpers ----------------
     function appendUserBubble(text) {
         if (!chatContainer) return;
-        const el = document.createElement('div');
-        el.className = 'chat-bubble user';
-        el.textContent = text;
-        chatContainer.appendChild(el);
+    const row = document.createElement('div');
+    row.className = 'chat-row user';
+    const avatar = document.createElement('div');
+    avatar.className = 'avatar user';
+    avatar.innerHTML = '<img src="/static/avatars/happy-face.png" alt="user"/>';
+    const bubble = document.createElement('div');
+    bubble.className = 'chat-bubble user';
+    bubble.textContent = text;
+    row.appendChild(avatar);
+    row.appendChild(bubble);
+    chatContainer.appendChild(row);
         chatContainer.scrollTop = chatContainer.scrollHeight;
     }
 
     let currentAIBubble = null;
     function appendAIBubbleStart() {
         if (!chatContainer) return;
-        const el = document.createElement('div');
-        el.className = 'chat-bubble ai';
-        el.textContent = '';
-        chatContainer.appendChild(el);
-        chatContainer.scrollTop = chatContainer.scrollHeight;
-        currentAIBubble = el;
+    const row = document.createElement('div');
+    row.className = 'chat-row ai';
+    const avatar = document.createElement('div');
+    avatar.className = 'avatar ai';
+    avatar.innerHTML = '<img src="/static/avatars/smile.png" alt="ai"/>';
+    const bubble = document.createElement('div');
+    bubble.className = 'chat-bubble ai';
+    bubble.textContent = '';
+    row.appendChild(bubble);
+    row.appendChild(avatar);
+    chatContainer.appendChild(row);
+    chatContainer.scrollTop = chatContainer.scrollHeight;
+    currentAIBubble = bubble;
     }
 
     function appendAIBubbleChunk(text) {
