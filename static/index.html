@@ -36,6 +36,33 @@
             <!-- conversation bubbles will be appended here -->
         </div>
     </div>
+        <!-- Playlist modal -->
+        <div id="playlistModal" class="playlist-modal" style="display:none;">
+            <div class="playlist-modal-box">
+                <button id="closePlaylistModal" class="close-modal">×</button>
+                <h3 id="playlistModalTitle">Playlist</h3>
+                <div id="playlistTracks" class="playlist-tracks"></div>
+                <div class="player-controls">
+                    <button id="playerPrev">⏮</button>
+                    <button id="playerPlay">▶</button>
+                    <button id="playerNext">⏭</button>
+                    <div id="playerProgress" class="player-progress"><div class="player-progress-bar"></div></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Bottom music bar -->
+        <div id="musicBar" class="music-bar" style="display:none;">
+            <img id="musicBarImage" src="/static/avatars/smile.png" class="music-bar-image" />
+            <div class="music-bar-meta">
+                <div id="musicBarTitle" class="music-bar-title">Track title</div>
+                <div id="musicBarArtist" class="music-bar-artist">Artist</div>
+            </div>
+            <div class="music-bar-controls">
+                <button id="musicBarPlay">▶</button>
+                <div id="musicBarProgress" class="music-bar-progress"><div class="music-bar-progress-fill"></div></div>
+            </div>
+        </div>
     <script src="/static/script.js"></script>
     <div id="confirmModal" class="confirm-modal top-right" style="display:none;">
         <div class="confirm-box">

@@ -457,6 +457,127 @@ h4 {
     border-radius: 12px;
 }
 
+/* Custom scrollbars for chat, playlist lists and modal boxes */
+.chat-container,
+.playlist-tracks,
+.playlist-modal-box {
+    /* Firefox */
+    scrollbar-width: thin;
+    scrollbar-color: rgba(153,102,255,0.95) rgba(255,255,255,0.03);
+}
+
+/* WebKit/Blink browsers */
+.chat-container::-webkit-scrollbar,
+.playlist-tracks::-webkit-scrollbar,
+.playlist-modal-box::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+.chat-container::-webkit-scrollbar-track,
+.playlist-tracks::-webkit-scrollbar-track,
+.playlist-modal-box::-webkit-scrollbar-track {
+    background: rgba(255,255,255,0.03);
+    border-radius: 10px;
+}
+.chat-container::-webkit-scrollbar-thumb,
+.playlist-tracks::-webkit-scrollbar-thumb,
+.playlist-modal-box::-webkit-scrollbar-thumb {
+    background: linear-gradient(180deg,#9966ff,#00d1ff);
+    border-radius: 10px;
+    border: 2px solid rgba(0,0,0,0.25);
+}
+.chat-container::-webkit-scrollbar-thumb:hover,
+.playlist-tracks::-webkit-scrollbar-thumb:hover,
+.playlist-modal-box::-webkit-scrollbar-thumb:hover {
+    filter: brightness(1.06);
+}
+
+
+.playlist-cards {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+    max-width: 78%;
+}
+.playlist-header {
+    font-size: 0.85rem;
+    color: #cbd5ff;
+    margin-bottom: 6px;
+}
+.playlist-list {
+    display: flex;
+    gap: 8px;
+}
+.playlist-card {
+    display: flex;
+    gap: 8px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.04);
+    padding: 8px;
+    border-radius: 10px;
+    text-decoration: none;
+    color: inherit;
+    align-items: center;
+}
+.playlist-image {
+    width: 48px;
+    height: 48px;
+    object-fit: cover;
+    border-radius: 6px;
+}
+.playlist-title {
+    font-size: 0.9rem;
+    font-weight: 600;
+}
+
+/* Playlist modal */
+.playlist-modal {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0,0,0,0.6);
+    z-index: 120;
+}
+.playlist-modal-box {
+    width: 90%;
+    max-width: 680px;
+    background: #0f0f12;
+    border-radius: 12px;
+    padding: 18px;
+    border: 1px solid rgba(255,255,255,0.06);
+}
+.close-modal {
+    position: absolute;
+    right: 20px;
+    top: 18px;
+    background: transparent;
+    border: none;
+    font-size: 20px;
+    color: #ddd;
+    cursor: pointer;
+}
+.playlist-tracks { display: flex; flex-direction: column; gap: 8px; max-height: 360px; overflow-y: auto; margin-top: 8px; }
+.playlist-track { display:flex; gap:10px; align-items:center; padding:8px; border-radius:8px; background: rgba(255,255,255,0.02); }
+.playlist-track img { width:48px; height:48px; object-fit:cover; border-radius:6px; }
+.playlist-track .track-meta { display:flex; flex-direction:column; }
+.playlist-track .track-title { font-weight:600; }
+.player-controls { display:flex; align-items:center; gap:12px; margin-top:12px; }
+.player-progress { width:100%; height:8px; background: rgba(255,255,255,0.05); border-radius:6px; overflow:hidden; }
+.player-progress-bar { width:0%; height:100%; background: linear-gradient(90deg,#9966ff,#00d1ff); }
+
+/* Bottom music bar */
+.music-bar { position: fixed; left: 0; right: 0; bottom: 0; height: 64px; background: linear-gradient(90deg, rgba(0,0,0,0.6), rgba(0,0,0,0.4)); display:flex; align-items:center; gap:12px; padding:8px 12px; z-index:110; border-top:1px solid rgba(255,255,255,0.04); }
+.music-bar-image { width:48px; height:48px; object-fit:cover; border-radius:6px; }
+.music-bar-meta { flex:1; text-align:left; }
+.music-bar-title { font-weight:600; }
+.music-bar-artist { font-size:0.85rem; color:#cfcfe0; }
+.music-bar-controls { display:flex; align-items:center; gap:8px; }
+.music-bar-progress { width:200px; height:8px; background: rgba(255,255,255,0.04); border-radius:6px; overflow:hidden; }
+.music-bar-progress-fill { width:0%; height:100%; background: linear-gradient(90deg,#ff6b6b,#9966ff); }
+
 .chat-bubble {
     padding: 12px 14px;
     border-radius: 12px;

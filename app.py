@@ -3,7 +3,7 @@ import os
 import logging
 import json
 import base64
-from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect, Body
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,6 +19,8 @@ import wave
 import io
 import time
 from datetime import datetime
+import time as _time
+import re
 
 # --- Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -30,6 +32,187 @@ ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 MURF_CONTEXT_ID = os.getenv("MURF_CONTEXT_ID", "murf_context_global_1")
 MURF_WS_URL = os.getenv("MURF_WS_URL", "wss://api.murf.ai/v1/speech/stream-input")
+
+# --- Spotify credentials (for mood-based recommendations) ---
+SPOTIFY_CLIENT_ID = os.getenv("CLIENT_ID")
+SPOTIFY_CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+
+# Token cache
+_spotify_token: str | None = None
+_spotify_token_expires_at: float = 0.0
+
+async def get_spotify_token() -> str | None:
+    """Obtain and cache a Spotify client-credentials token.
+
+    Returns the Bearer token string or None on failure.
+    """
+    global _spotify_token, _spotify_token_expires_at
+    # return cached token if still valid (with 60s leeway)
+    if _spotify_token and _spotify_token_expires_at - 60 > _time.time():
+        return _spotify_token
+
+    if not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET:
+        logging.warning("Spotify CLIENT_ID/CLIENT_SECRET not set in environment")
+        return None
+
+    token_url = "https://accounts.spotify.com/api/token"
+    payload = {"grant_type": "client_credentials"}
+    # Use HTTP Basic Auth per Spotify spec
+    try:
+        async with httpx.AsyncClient() as client:
+            auth = httpx.BasicAuth(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET)
+            resp = await client.post(token_url, data=payload, auth=auth, timeout=10)
+            text = resp.text
+            try:
+                resp.raise_for_status()
+            except Exception as e:
+                logging.error(f"Spotify token request failed (status={resp.status_code}): {text}")
+                raise
+            try:
+                data = resp.json()
+            except Exception:
+                logging.error(f"Spotify token response JSON parse failed: {text}")
+                return None
+            token = data.get("access_token")
+            expires_in = int(data.get("expires_in", 3600))
+            if token:
+                _spotify_token = token
+                _spotify_token_expires_at = _time.time() + expires_in
+                logging.info("Obtained Spotify token, expires in %s seconds", expires_in)
+                return _spotify_token
+    except Exception as e:
+        logging.error(f"Failed to obtain Spotify token: {e}")
+        return None
+
+
+def _normalize_mood(q: str) -> str:
+    """Small normalization for mood queries to improve Spotify search results."""
+    m = (q or "").strip().lower()
+    mapping = {
+        "happy": "happy",
+        "sad": "sad",
+        "chill": "chill",
+        "relax": "chill",
+        "energetic": "party",
+        "focus": "focus",
+        "romantic": "romance",
+        "angry": "metal",
+        "sleep": "sleep",
+    }
+    return mapping.get(m, m or "mood")
+
+
+def _detect_mood_from_text(text: str) -> str:
+    """Mood detector using a configurable checks mapping.
+
+    The `checks` mapping contains for each canonical mood a list of allowed keywords
+    (synonyms, short stems, etc.). We return the normalized mood as soon as one of
+    the keywords is found in the user's text (whole-word or contained within a word).
+
+    Returns the normalized mood string or 'mood' when nothing matches.
+    """
+    if not text:
+        return "mood"
+    t = text.lower()
+
+    # User-provided whitelist of keywords per mood
+    checks = {
+        'happy': ['happy', 'joy', 'delighted', 'cheerful', 'glad', 'grin', 'smile', 'upbeat'],
+        'sad': ['sad', 'depressed', 'unhappy', 'down', 'blue', 'tear', 'melancholy'],
+        'chill': ['chill', 'relax', 'calm', 'soothing', 'easy', 'laid-back', 'relaxed'],
+        'energetic': ['energetic', 'energ', 'excited', 'pump', 'upbeat', 'dance', 'party'],
+        'focus': ['focus', 'concentrate', 'study', 'work', 'productive'],
+        'romantic': ['love', 'romantic', 'romance', 'affection', 'dating'],
+        'angry': ['angry', 'mad', 'furious', 'rage', 'irritated'],
+        'sleep': ['sleep', 'sleepy', 'rest', 'night', 'lullaby']
+    }
+
+    # Tokenize using regex to capture words and hyphenated tokens (e.g. 'laid-back')
+    words = [w.lower() for w in re.findall(r"[\w-]+", t)]
+
+    # Priority-ordered checks (dictionary preserves insertion order on Python 3.7+)
+    for mood, kws in checks.items():
+        for kw in kws:
+            # match whole word first
+            if kw in words:
+                return _normalize_mood(mood)
+            # then allow substring match to catch variants (e.g. 'energ' in 'energized')
+            for w in words:
+                if kw and kw in w:
+                    return _normalize_mood(mood)
+
+    return 'mood'
+
+
+async def search_spotify_playlists(mood: str, limit: int = 3):
+    """Search Spotify for playlists matching the mood and return list of {name,url,id} dicts."""
+    token = await get_spotify_token()
+    if not token:
+        return []
+    q = _normalize_mood(mood)
+    search_url = "https://api.spotify.com/v1/search"
+    params = {"q": q, "type": "playlist", "limit": limit}
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            resp = await client.get(search_url, params=params, headers=headers)
+            text = resp.text
+            # Spotify may return an error payload even with non-200
+            try:
+                resp.raise_for_status()
+            except Exception:
+                logging.error(f"Spotify search status error (status={resp.status_code}): {text}")
+                # try to parse body for error details
+                try:
+                    err = resp.json()
+                    logging.error("Spotify error body: %s", err)
+                except Exception:
+                    pass
+                return []
+
+            try:
+                data = resp.json()
+            except Exception:
+                logging.error(f"Spotify search returned non-JSON: {text}")
+                return []
+
+            # handle explicit error structure
+            if isinstance(data, dict) and data.get("error"):
+                logging.error("Spotify search returned error payload: %s", data.get("error"))
+                return []
+
+            if not isinstance(data, dict):
+                logging.error("Unexpected Spotify search response type: %s", type(data))
+                return []
+
+            playlists_block = data.get("playlists") or {}
+            if not isinstance(playlists_block, dict):
+                logging.error("Spotify playlists block missing or invalid: %s", playlists_block)
+                return []
+
+            items = playlists_block.get("items") or []
+            results = []
+            for p in items:
+                if not p or not isinstance(p, dict):
+                    continue
+                image_url = None
+                try:
+                    images = p.get("images") or []
+                    if images and isinstance(images, list):
+                        image_url = images[0].get("url") if images[0] else None
+                except Exception:
+                    image_url = None
+
+                results.append({
+                    "name": p.get("name"),
+                    "url": (p.get("external_urls") or {}).get("spotify"),
+                    "id": p.get("id"),
+                    "image": image_url
+                })
+            return results
+    except Exception as e:
+        logging.error(f"Spotify search failed: {e}")
+        return []
 
 if ASSEMBLYAI_API_KEY:
     aai.settings.api_key = ASSEMBLYAI_API_KEY
@@ -482,8 +665,27 @@ class AudioStreamer:
                 murf_task.cancel()
 
             # Add AI response to chat history after finishing (trimmed)
-            if full_response_ref["text"]:
-                append_to_history(session_id, "model", full_response_ref["text"])
+                if full_response_ref["text"]:
+                    append_to_history(session_id, "model", full_response_ref["text"])
+                    # Detect mood and fetch playlist recommendations only when a concrete mood was found
+                    try:
+                        # Use the user's original transcript to decide whether to recommend music
+                        detected_mood = _detect_mood_from_text(user_text)
+                        # _detect_mood_from_text returns 'mood' as a generic fallback; skip recommendations in that case
+                        if detected_mood and detected_mood != 'mood':
+                            playlists = await search_spotify_playlists(detected_mood, limit=3)
+                            if playlists:
+                                # Send playlist recommendations to client over websocket
+                                try:
+                                    await websocket.send_text(json.dumps({
+                                        "type": "playlist_recommendations",
+                                        "mood": detected_mood,
+                                        "playlists": playlists
+                                    }))
+                                except Exception:
+                                    pass
+                    except Exception as ex:
+                        logging.debug(f"Playlist recommendation failed: {ex}")
             
         except Exception as e:
             print(f"❌ Error in LLM streaming: {e}")
@@ -569,6 +771,100 @@ async def get_chat_history(session_id: str):
     return {"history": chat_history[session_id]}
 
 
+@app.get("/recommend/{mood}")
+async def recommend_playlists(mood: str):
+    """Return 2-3 Spotify playlists that match the given mood.
+
+    Uses the Client Credentials flow; token is cached until expiry.
+    """
+    token = await get_spotify_token()
+    if not token:
+        raise HTTPException(status_code=500, detail="Spotify credentials not configured or token request failed.")
+
+    q = _normalize_mood(mood)
+    search_url = "https://api.spotify.com/v1/search"
+    params = {"q": q, "type": "playlist", "limit": 3}
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            resp = await client.get(search_url, params=params, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            items = data.get("playlists", {}).get("items", [])
+            results = []
+            for p in items:
+                results.append({
+                    "name": p.get("name"),
+                    "url": p.get("external_urls", {}).get("spotify"),
+                    "id": p.get("id")
+                })
+            return {"mood": mood, "query": q, "playlists": results}
+    except httpx.HTTPStatusError as e:
+        logging.error(f"Spotify API error: {e.response.status_code} - {e.response.text}")
+        raise HTTPException(status_code=502, detail="Spotify API returned an error.")
+    except Exception as e:
+        logging.error(f"Spotify request failed: {e}")
+        raise HTTPException(status_code=502, detail="Failed to query Spotify.")
+
+
+@app.get("/spotify/playlist/{playlist_id}")
+async def get_playlist_tracks(playlist_id: str):
+    """Return tracks for a playlist (name, artists, preview_url, duration_ms, track_url, image).
+
+    Uses cached Spotify token.
+    """
+    token = await get_spotify_token()
+    if not token:
+        raise HTTPException(status_code=500, detail="Spotify credentials not configured or token request failed.")
+
+    url = f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks"
+    params = {"fields": "items(track(name,artists(name),preview_url,external_urls,duration_ms,album(images)))", "limit": 100}
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url, params=params, headers=headers)
+            text = resp.text
+            try:
+                resp.raise_for_status()
+            except Exception:
+                logging.error(f"Spotify playlist tracks status error (status={resp.status_code}): {text}")
+                try:
+                    logging.error("Spotify error body: %s", resp.json())
+                except Exception:
+                    pass
+                raise HTTPException(status_code=502, detail="Spotify API error fetching playlist tracks")
+
+            data = resp.json()
+            items = data.get("items") or []
+            tracks = []
+            for it in items:
+                track = (it or {}).get("track") or {}
+                if not track:
+                    continue
+                artists = [a.get("name") for a in (track.get("artists") or []) if a.get("name")]
+                image = None
+                try:
+                    imgs = (track.get("album") or {}).get("images") or []
+                    if imgs and isinstance(imgs, list):
+                        image = imgs[0].get("url")
+                except Exception:
+                    image = None
+                tracks.append({
+                    "name": track.get("name"),
+                    "artists": artists,
+                    "preview_url": track.get("preview_url"),
+                    "duration_ms": track.get("duration_ms"),
+                    "external_url": (track.get("external_urls") or {}).get("spotify"),
+                    "image": image
+                })
+            return {"playlist_id": playlist_id, "tracks": tracks}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Failed to fetch playlist tracks: {e}")
+        raise HTTPException(status_code=502, detail="Failed to fetch playlist tracks")
+
+
 @app.post("/session/switch")
 async def switch_session(payload: dict):
     """Switch to a new session; optionally clear an old session's memory.
@@ -592,15 +888,25 @@ async def switch_session(payload: dict):
 
 # --- TTS Endpoint ---
 @app.post("/tts")
-async def generate_tts(text: str):
+async def generate_tts(payload: dict = Body(...)):
+    """Generate TTS from posted JSON {"text": "..."} and return {"audio_url": "..."}.
+
+    Older code expected a raw `text` param; the client now POSTs JSON. This handler
+    reads the JSON body and forwards the text to Murf.
+    """
+    text = (payload or {}).get("text") if isinstance(payload, dict) else None
+    if not text:
+        raise HTTPException(status_code=400, detail="Missing 'text' in request body.")
+
     if not MURF_API_KEY:
         logging.error("TTS endpoint called but MURF_API_KEY missing.")
         raise HTTPException(status_code=500, detail="TTS service not configured.")
+
     headers = {"api-key": MURF_API_KEY, "Content-Type": "application/json"}
-    payload = {"text": text, "voiceId": "en-US-natalie"}
+    req_payload = {"text": text, "voiceId": "en-US-natalie"}
     try:
         async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post("https://api.murf.ai/v1/speech/generate", headers=headers, json=payload)
+            resp = await client.post("https://api.murf.ai/v1/speech/generate", headers=headers, json=req_payload)
             resp.raise_for_status()
             data = resp.json()
             audio_url = data.get("audioFile")
@@ -666,6 +972,16 @@ async def agent_chat(session_id: str, file: UploadFile = File(...)):
 
     append_to_history(session_id, "model", llm_text)
 
+    # automatically fetch playlists for the model reply only when a concrete mood is detected
+    playlists_for_response = []
+    try:
+        # Use the user's original transcript to decide whether to recommend music
+        detected_mood = _detect_mood_from_text(user_text)
+        if detected_mood and detected_mood != 'mood':
+            playlists_for_response = await search_spotify_playlists(detected_mood, limit=3)
+    except Exception:
+        playlists_for_response = []
+
     try:
         if not MURF_API_KEY: raise ValueError("Murf API key not set.")
         murf_text = llm_text[:2900]
@@ -686,11 +1002,14 @@ async def agent_chat(session_id: str, file: UploadFile = File(...)):
                 "llm_response": llm_text
             }
         )
-    return {
+    resp_payload = {
         "audio_url": audio_url,
         "transcription": user_text,
         "llm_response": llm_text
     }
+    if playlists_for_response:
+        resp_payload["playlists"] = playlists_for_response
+    return resp_payload
 # @app.get("/agent/chat/history/{session_id}")
 # async def get_chat_history(session_id: str):
 #     if session_id not in chat_history:

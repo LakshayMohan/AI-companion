@@ -5,6 +5,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const recordBtnText = document.getElementById('recordBtnText');
     const statusDisplay = document.getElementById("status");
     const responseAudio = document.getElementById("responseAudio");
+    // Prevent the <audio> element from playing sound directly to the output device.
+    // We use a MediaElementSourceNode to route audio through the AudioContext so
+    // mute the element itself to avoid double/duplicate output (native + AudioContext).
+    if (responseAudio) responseAudio.muted = true;
     const audioVisualizer = document.getElementById('audioVisualizer');
     const transcriptionContainer = document.getElementById("transcription-container");
     const transcriptionOutput = document.getElementById("transcriptionOutput");
@@ -218,6 +222,9 @@ document.addEventListener('DOMContentLoaded', () => {
                                     const url = URL.createObjectURL(blob);
                                     // Clear any saved chunks to free memory
                                     base64AudioChunks = [];
+                                    // mark playback active and cancel fallback
+                                    responsePlaying = true;
+                                    if (llmFallbackTimer) { clearTimeout(llmFallbackTimer); llmFallbackTimer = null; }
                                     disconnectPlayback();
                                     responseSourceNode.connect(playbackAnalyser);
                                     playbackAnalyser.connect(audioContext.destination);
@@ -233,6 +240,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                         stopPulseEffect();
                                         stopAudioBtn.style.display = 'none';
                                         statusDisplay.textContent = 'Ready for your next question.';
+                                        responsePlaying = false;
                                         disconnectPlayback();
                                     };
                                 } catch (e) {
@@ -242,6 +250,14 @@ document.addEventListener('DOMContentLoaded', () => {
                             } else {
                                 try { playSavedChunks(); } catch (_) {}
                             }
+                            break;
+                        }
+                        case 'playlist_recommendations': {
+                            try {
+                                const pls = data.playlists || [];
+                                const mood = data.mood || '';
+                                appendPlaylistCards(pls, mood);
+                            } catch (e) {}
                             break;
                         }
                         default:
@@ -332,6 +348,197 @@ document.addEventListener('DOMContentLoaded', () => {
         currentAIBubble = null;
         chatContainer.scrollTop = chatContainer.scrollHeight;
     }
+
+    function appendPlaylistCards(playlists, mood) {
+        if (!chatContainer) return;
+        if (!playlists || playlists.length === 0) return;
+
+        const row = document.createElement('div');
+        row.className = 'chat-row ai';
+
+        const container = document.createElement('div');
+        container.className = 'playlist-cards';
+        const header = document.createElement('div');
+        header.className = 'playlist-header';
+        header.textContent = mood ? `Playlists for mood: ${mood}` : 'Playlist recommendations';
+        container.appendChild(header);
+
+        const list = document.createElement('div');
+        list.className = 'playlist-list';
+        playlists.forEach(p => {
+            const card = document.createElement('a');
+            card.className = 'playlist-card';
+            card.href = p.url || '#';
+            if (p.id) card.dataset.playlistId = p.id;
+            card.target = '_blank';
+            card.rel = 'noopener noreferrer';
+
+            const img = document.createElement('img');
+            img.className = 'playlist-image';
+            img.src = p.image || '/static/avatars/smile.png';
+            img.alt = p.name || 'playlist';
+            card.appendChild(img);
+
+            const meta = document.createElement('div');
+            meta.className = 'playlist-meta';
+            const title = document.createElement('div');
+            title.className = 'playlist-title';
+            title.textContent = p.name || 'Untitled';
+            meta.appendChild(title);
+            card.appendChild(meta);
+
+            list.appendChild(card);
+        });
+
+        container.appendChild(list);
+        // append a placeholder avatar at right for ai style
+        const avatar = document.createElement('div');
+        avatar.className = 'avatar ai';
+        avatar.innerHTML = '<img src="/static/avatars/smile.png" alt="ai"/>';
+
+        row.appendChild(container);
+        row.appendChild(avatar);
+        chatContainer.appendChild(row);
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+
+    // --- Playlist modal & music bar logic ---
+    const playlistModal = document.getElementById('playlistModal');
+    const closePlaylistModal = document.getElementById('closePlaylistModal');
+    const playlistModalTitle = document.getElementById('playlistModalTitle');
+    const playlistTracksNode = document.getElementById('playlistTracks');
+    const playerPlayBtn = document.getElementById('playerPlay');
+    const playerPrevBtn = document.getElementById('playerPrev');
+    const playerNextBtn = document.getElementById('playerNext');
+    const playerProgressBar = document.querySelector('.player-progress-bar');
+
+    const musicBar = document.getElementById('musicBar');
+    const musicBarImage = document.getElementById('musicBarImage');
+    const musicBarTitle = document.getElementById('musicBarTitle');
+    const musicBarArtist = document.getElementById('musicBarArtist');
+    const musicBarPlay = document.getElementById('musicBarPlay');
+    const musicBarProgressFill = document.querySelector('.music-bar-progress-fill');
+
+    let currentPlaylist = [];
+    let currentTrackIndex = 0;
+    let audioPlayer = new Audio();
+    let progressTimer = null;
+
+    function openPlaylistModal(playlist) {
+        // playlist: {name, url, id, image}
+        if (!playlist) return;
+        playlistModalTitle.textContent = playlist.name || 'Playlist';
+        playlistTracksNode.innerHTML = '<div class="loading">Loading tracks…</div>';
+        playlistModal.style.display = 'flex';
+
+        // fetch tracks
+        fetch(`/spotify/playlist/${encodeURIComponent(playlist.id)}`)
+            .then(r => r.json())
+            .then(data => {
+                renderPlaylistTracks(data.tracks || []);
+                currentPlaylist = data.tracks || [];
+                currentTrackIndex = 0;
+            }).catch(err => {
+                playlistTracksNode.innerHTML = '<div class="error">Could not load tracks.</div>';
+            });
+    }
+
+    function closeModal() {
+        playlistModal.style.display = 'none';
+    }
+    if (closePlaylistModal) closePlaylistModal.addEventListener('click', closeModal);
+
+    function renderPlaylistTracks(tracks) {
+        playlistTracksNode.innerHTML = '';
+        tracks.forEach((t, i) => {
+            const tr = document.createElement('div');
+            tr.className = 'playlist-track';
+            const img = document.createElement('img'); img.src = t.image || '/static/avatars/smile.png';
+            const meta = document.createElement('div'); meta.className = 'track-meta';
+            const title = document.createElement('div'); title.className = 'track-title'; title.textContent = t.name || 'Untitled';
+            const art = document.createElement('div'); art.className = 'track-artist'; art.textContent = (t.artists || []).join(', ');
+            meta.appendChild(title); meta.appendChild(art);
+            const playBtn = document.createElement('button'); playBtn.textContent = '►';
+            playBtn.addEventListener('click', () => {
+                startPlayback(tracks, i);
+                closeModal();
+            });
+            tr.appendChild(img); tr.appendChild(meta); tr.appendChild(playBtn);
+            playlistTracksNode.appendChild(tr);
+        });
+    }
+
+    function startPlayback(tracks, index) {
+        if (!tracks || tracks.length === 0) return;
+        currentPlaylist = tracks;
+        currentTrackIndex = index || 0;
+        const track = currentPlaylist[currentTrackIndex];
+        if (!track) return;
+        // prefer preview_url; if missing, fallback to opening external_url in new tab
+        if (!track.preview_url) {
+            window.open(track.external_url, '_blank');
+            return;
+        }
+        audioPlayer.src = track.preview_url;
+        audioPlayer.crossOrigin = 'anonymous';
+        audioPlayer.play().catch(() => {});
+        musicBar.style.display = 'flex';
+        musicBarImage.src = track.image || '/static/avatars/smile.png';
+        musicBarTitle.textContent = track.name || '';
+        musicBarArtist.textContent = (track.artists || []).join(', ');
+        musicBarPlay.textContent = '⏸';
+
+        // progress timer
+        if (progressTimer) clearInterval(progressTimer);
+        progressTimer = setInterval(() => {
+            if (!audioPlayer.duration || isNaN(audioPlayer.duration)) return;
+            const pct = (audioPlayer.currentTime / audioPlayer.duration) * 100;
+            musicBarProgressFill.style.width = `${pct}%`;
+            playerProgressBar.style.width = `${pct}%`;
+        }, 250);
+
+        audioPlayer.onended = () => {
+            musicBarPlay.textContent = '▶';
+            // auto-advance
+            if (currentTrackIndex < currentPlaylist.length - 1) {
+                startPlayback(currentPlaylist, currentTrackIndex + 1);
+            } else {
+                if (progressTimer) clearInterval(progressTimer);
+                musicBarProgressFill.style.width = '0%';
+                playerProgressBar.style.width = '0%';
+            }
+        };
+    }
+
+    musicBarPlay.addEventListener('click', () => {
+        if (audioPlayer.paused) {
+            audioPlayer.play();
+            musicBarPlay.textContent = '⏸';
+        } else {
+            audioPlayer.pause();
+            musicBarPlay.textContent = '▶';
+        }
+    });
+
+    playerPrevBtn.addEventListener('click', () => {
+        if (currentTrackIndex > 0) startPlayback(currentPlaylist, currentTrackIndex - 1);
+    });
+    playerNextBtn.addEventListener('click', () => {
+        if (currentTrackIndex < currentPlaylist.length - 1) startPlayback(currentPlaylist, currentTrackIndex + 1);
+    });
+
+    // click handler for playlist cards (delegate)
+    document.addEventListener('click', (e) => {
+        const el = e.target.closest('.playlist-card');
+        if (!el) return;
+        e.preventDefault();
+        const href = el.getAttribute('href') || '';
+        // the playlist id is not present directly in href; store data-id attribute when creating cards
+        const pid = el.dataset.playlistId || (new URL(href, window.location.href).pathname.split('/').pop());
+        const name = el.querySelector('.playlist-title') ? el.querySelector('.playlist-title').textContent : '';
+        openPlaylistModal({ id: pid, name: name });
+    });
+
 
     // --- Record Button ---
     recordBtn.addEventListener('click', () => {
@@ -650,6 +857,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- LLM Streaming Functions ---
     let currentLLMResponse = "";
     let murfFinalReceived = false;
+    // Flag to indicate we've started playback for the current LLM response
+    let responsePlaying = false;
+    // Fallback timer when Murf streaming doesn't produce a final audio
+    let llmFallbackTimer = null;
     
     function handleLLMStart(data) {
         currentLLMResponse = "";
@@ -712,6 +923,36 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!murfFinalReceived && base64AudioChunks && base64AudioChunks.length > 0) {
             try { setTimeout(() => playSavedChunks(), 200); } catch(_) {}
         }
+
+        // If Murf doesn't respond with a final audio within a short window, request
+        // a server-side TTS of the full LLM response to guarantee playback.
+        try {
+            if (llmFallbackTimer) { clearTimeout(llmFallbackTimer); llmFallbackTimer = null; }
+            const fullText = (data && data.full_response) ? data.full_response : currentLLMResponse;
+            // wait a bit for Murf to finish; if still nothing, call /tts
+            llmFallbackTimer = setTimeout(() => {
+                if (responsePlaying || murfFinalReceived) return;
+                if (!fullText || fullText.trim().length === 0) return;
+                // if we already collected chunks, prefer to play them (will be handled above)
+                if (base64AudioChunks && base64AudioChunks.length > 0) {
+                    try { playSavedChunks(); return; } catch (_) { }
+                }
+                // otherwise, request server TTS for the complete response
+                fetch('/tts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: fullText })
+                }).then(r => r.json()).then(d => {
+                    if (d && d.audio_url) {
+                        // start playback via existing helper
+                        responsePlaying = true;
+                        playResponseAudio(d.audio_url).finally(() => { responsePlaying = false; });
+                    }
+                }).catch(err => {
+                    console.error('Fallback TTS request failed', err);
+                });
+            }, 1200);
+        } catch (e) {}
     }
 
     // ------------------ WAV Assembly for Murf Chunks -----------------
@@ -774,6 +1015,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const url = URL.createObjectURL(blob);
 
         try {
+            // prevent fallback while playing
+            responsePlaying = true;
+            if (llmFallbackTimer) { clearTimeout(llmFallbackTimer); llmFallbackTimer = null; }
             disconnectPlayback();
             responseSourceNode.connect(playbackAnalyser);
             playbackAnalyser.connect(audioContext.destination);
@@ -793,6 +1037,7 @@ document.addEventListener('DOMContentLoaded', () => {
             statusDisplay.textContent = "Ready for your next question.";
             // clear stored chunks after playback
             base64AudioChunks = [];
+            responsePlaying = false;
             disconnectPlayback();
         };
     }
@@ -800,6 +1045,8 @@ document.addEventListener('DOMContentLoaded', () => {
     function playSavedChunks() {
         const saved = base64AudioChunks;
         if (saved && saved.length > 0) {
+            // prevent multiple concurrent plays
+            if (responsePlaying) return;
             playCombinedWavChunks(saved);
             // clear stored chunks after starting playback (safety)
             base64AudioChunks = [];
