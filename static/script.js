@@ -9,6 +9,20 @@ document.addEventListener('DOMContentLoaded', () => {
     const transcriptionOutput = document.getElementById("transcriptionOutput");
     const llmResponseContainer = document.getElementById("llm-response-container");
     const llmResponseOutput = document.getElementById("llmResponseOutput");
+    // Settings sidebar elements
+    const openSettingsBtn = document.getElementById('openSettingsBtn');
+    const settingsSidebar = document.getElementById('settingsSidebar');
+    const settingsOverlay = document.getElementById('settingsOverlay');
+    const closeSettingsBtn = document.getElementById('closeSettingsBtn');
+    const saveSettingsBtn = document.getElementById('saveSettingsBtn');
+    const clearSettingsBtn = document.getElementById('clearSettingsBtn');
+    const settingsSaveStatus = document.getElementById('settingsSaveStatus');
+    const murfKeyInput = document.getElementById('murfKey');
+    const assemblyKeyInput = document.getElementById('assemblyKey');
+    const geminiKeyInput = document.getElementById('geminiKey');
+    const opencageKeyInput = document.getElementById('opencageKey');
+    const spotifyClientIdInput = document.getElementById('spotifyClientId');
+    const spotifyClientSecretInput = document.getElementById('spotifyClientSecret');
 
     // --- State Variables ---
     let mediaRecorder, audioChunks = [], sessionId = null, isRecording = false;
@@ -22,6 +36,8 @@ document.addEventListener('DOMContentLoaded', () => {
         sessionId = params.get('session_id') || `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         const newUrl = `${window.location.pathname}?session_id=${sessionId}`;
         window.history.replaceState({ path: newUrl }, '', newUrl);
+        // Preload saved settings
+        safeLoadSettingsToForm();
     };
     
     // --- Core Functionality ---
@@ -216,4 +232,74 @@ document.addEventListener('DOMContentLoaded', () => {
             llmResponseContainer.style.display = "block";
         }
     }
+
+    // ---------------- Settings Sidebar Logic ----------------
+    function openSettings() {
+        if (settingsOverlay) settingsOverlay.style.display = 'block';
+        if (settingsSidebar) {
+            settingsSidebar.classList.add('open');
+            settingsSidebar.setAttribute('aria-hidden', 'false');
+        }
+        safeLoadSettingsToForm();
+    }
+    function closeSettings() {
+        if (settingsOverlay) settingsOverlay.style.display = 'none';
+        if (settingsSidebar) {
+            settingsSidebar.classList.remove('open');
+            settingsSidebar.setAttribute('aria-hidden', 'true');
+        }
+    }
+
+    function safeLoadSettingsToForm() {
+        try {
+            const ls = window.localStorage;
+            if (!ls) return;
+            murfKeyInput && (murfKeyInput.value = ls.getItem('MURF_API_KEY') || '');
+            assemblyKeyInput && (assemblyKeyInput.value = ls.getItem('ASSEMBLYAI_API_KEY') || '');
+            geminiKeyInput && (geminiKeyInput.value = ls.getItem('GEMINI_API_KEY') || '');
+            opencageKeyInput && (opencageKeyInput.value = ls.getItem('OPENCAGE_API_KEY') || '');
+            spotifyClientIdInput && (spotifyClientIdInput.value = ls.getItem('CLIENT_ID') || '');
+            spotifyClientSecretInput && (spotifyClientSecretInput.value = ls.getItem('CLIENT_SECRET') || '');
+        } catch (_) {}
+    }
+
+    function saveSettingsFromForm() {
+        try {
+            const ls = window.localStorage;
+            if (!ls) return;
+            if (murfKeyInput) ls.setItem('MURF_API_KEY', murfKeyInput.value.trim());
+            if (assemblyKeyInput) ls.setItem('ASSEMBLYAI_API_KEY', assemblyKeyInput.value.trim());
+            if (geminiKeyInput) ls.setItem('GEMINI_API_KEY', geminiKeyInput.value.trim());
+            if (opencageKeyInput) ls.setItem('OPENCAGE_API_KEY', opencageKeyInput.value.trim());
+            if (spotifyClientIdInput) ls.setItem('CLIENT_ID', spotifyClientIdInput.value.trim());
+            if (spotifyClientSecretInput) ls.setItem('CLIENT_SECRET', spotifyClientSecretInput.value.trim());
+            if (settingsSaveStatus) {
+                settingsSaveStatus.textContent = 'Saved your settings locally.';
+                setTimeout(() => settingsSaveStatus.textContent = '', 1600);
+            }
+            // Notify app parts if needed
+            document.dispatchEvent(new CustomEvent('configUpdated'));
+        } catch (_) {}
+    }
+
+    function clearSettings() {
+        try {
+            const ls = window.localStorage;
+            if (!ls) return;
+            ['MURF_API_KEY','ASSEMBLYAI_API_KEY','GEMINI_API_KEY','OPENCAGE_API_KEY','CLIENT_ID','CLIENT_SECRET']
+                .forEach(k => ls.removeItem(k));
+            safeLoadSettingsToForm();
+            if (settingsSaveStatus) {
+                settingsSaveStatus.textContent = 'Cleared saved settings.';
+                setTimeout(() => settingsSaveStatus.textContent = '', 1600);
+            }
+            document.dispatchEvent(new CustomEvent('configUpdated'));
+        } catch (_) {}
+    }
+
+    if (openSettingsBtn) openSettingsBtn.addEventListener('click', openSettings);
+    if (closeSettingsBtn) closeSettingsBtn.addEventListener('click', closeSettings);
+    if (settingsOverlay) settingsOverlay.addEventListener('click', closeSettings);
+    if (saveSettingsBtn) saveSettingsBtn.addEventListener('click', saveSettingsFromForm);
+    if (clearSettingsBtn) clearSettingsBtn.addEventListener('click', clearSettings);
 });

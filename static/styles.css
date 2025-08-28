@@ -157,3 +157,100 @@ h4 {
     color: #bbb;
     text-transform: uppercase;
 }
+
+/* Settings Sidebar UI */
+.settings-btn.top-right {
+    position: fixed;
+    top: 18px;
+    right: 18px;
+    z-index: 60;
+    background: rgba(0,0,0,0.35);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.1);
+    padding: 8px 12px;
+    border-radius: 10px;
+    cursor: pointer;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.5);
+}
+.settings-btn.top-right:hover { filter: brightness(1.06); }
+
+.settings-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.55);
+    z-index: 80;
+}
+
+.settings-sidebar {
+    position: fixed;
+    top: 0;
+    right: -420px;
+    width: 380px;
+    height: 100vh;
+    background: #0f0f12;
+    border-left: 1px solid rgba(255,255,255,0.08);
+    box-shadow: -12px 0 40px rgba(0,0,0,0.4);
+    z-index: 90;
+    transition: right 260ms ease;
+    display: flex;
+    flex-direction: column;
+}
+.settings-sidebar.open { right: 0; }
+
+.settings-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 16px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.settings-header h2 { margin: 0; font-size: 1.15rem; }
+.settings-close {
+    background: transparent;
+    color: #ddd;
+    border: none;
+    font-size: 20px;
+    cursor: pointer;
+}
+
+.settings-content {
+    padding: 14px 16px 18px 16px;
+    overflow-y: auto;
+}
+.settings-group { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.settings-group label { font-size: 0.85rem; color: #cfcfe0; }
+.settings-group input {
+    background: rgba(255,255,255,0.04);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 8px;
+    padding: 10px 12px;
+}
+
+.settings-subbox {
+    margin-top: 10px;
+    padding: 12px;
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 10px;
+    background: rgba(255,255,255,0.03);
+}
+.settings-subbox h3 { margin: 0 0 8px 0; font-size: 0.95rem; color: #cbd5ff; }
+
+.settings-actions { display: flex; gap: 8px; margin-top: 8px; }
+.btn {
+    background: #9966ff;
+    color: white;
+    border: none;
+    padding: 10px 14px;
+    font-size: 0.95rem;
+    border-radius: 8px;
+    cursor: pointer;
+    box-shadow: 0 0 10px rgba(153, 102, 255, 0.25);
+}
+.btn:hover { filter: brightness(1.06); }
+.btn.secondary {
+    background: rgba(255,255,255,0.08);
+    color: #e0e0e0;
+}
+
+.settings-save-status { margin-top: 8px; font-size: 0.85rem; color: #9fa0b2; min-height: 1em; }

@@ -9,6 +9,7 @@
 </head>
 <body>
     <div class="background-title">The Machine Mind</div>
+    <button id="openSettingsBtn" class="settings-btn top-right">Settings</button>
     <div class="agent-container">
         <h1>AI Companion</h1>
         <p>Press the button to speak and get an AI-powered response.</p>
@@ -38,6 +39,52 @@
             <div id="llmResponseOutput" class="response-box llm-box"></div>
         </div>
     </div>
+
+    <!-- Settings Sidebar and Overlay -->
+    <div id="settingsOverlay" class="settings-overlay" style="display:none;"></div>
+    <aside id="settingsSidebar" class="settings-sidebar" aria-hidden="true">
+        <div class="settings-header">
+            <h2>Settings</h2>
+            <button id="closeSettingsBtn" class="settings-close" aria-label="Close settings">×</button>
+        </div>
+        <div class="settings-content">
+            <div class="settings-group">
+                <label for="murfKey">MURF_API_KEY</label>
+                <input type="password" id="murfKey" placeholder="Enter MURF API Key" autocomplete="off" />
+            </div>
+            <div class="settings-group">
+                <label for="assemblyKey">ASSEMBLYAI_API_KEY</label>
+                <input type="password" id="assemblyKey" placeholder="Enter AssemblyAI API Key" autocomplete="off" />
+            </div>
+            <div class="settings-group">
+                <label for="geminiKey">GEMINI_API_KEY</label>
+                <input type="password" id="geminiKey" placeholder="Enter Gemini API Key" autocomplete="off" />
+            </div>
+            <div class="settings-group">
+                <label for="opencageKey">OPENCAGE_API_KEY</label>
+                <input type="password" id="opencageKey" placeholder="Enter OpenCage API Key" autocomplete="off" />
+            </div>
+
+            <div class="settings-subbox">
+                <h3>Spotify</h3>
+                <div class="settings-group">
+                    <label for="spotifyClientId">CLIENT_ID</label>
+                    <input type="text" id="spotifyClientId" placeholder="Enter Spotify Client ID" autocomplete="off" />
+                </div>
+                <div class="settings-group">
+                    <label for="spotifyClientSecret">CLIENT_SECRET</label>
+                    <input type="password" id="spotifyClientSecret" placeholder="Enter Spotify Client Secret" autocomplete="off" />
+                </div>
+            </div>
+
+            <div class="settings-actions">
+                <button id="saveSettingsBtn" class="btn primary">Save</button>
+                <button id="clearSettingsBtn" class="btn secondary">Clear</button>
+            </div>
+            <div id="settingsSaveStatus" class="settings-save-status" role="status" aria-live="polite"></div>
+        </div>
+    </aside>
+
     <script src="/static/script.js"></script>
 </body>
 </html>
