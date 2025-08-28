@@ -1,6 +1,6 @@
 # app.py
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -11,6 +11,8 @@ import assemblyai as aai
 import google.generativeai as genai
 from collections import defaultdict
 import logging # NEW: Import logging library
+import asyncio
+import json
 
 # --- NEW: Basic Logging Configuration ---
 # In a production app, you would configure this more extensively (e.g., log to files).
@@ -52,6 +54,22 @@ def serve_index():
 class TTSRequest(BaseModel):
     text: str
     voiceId: str = "en-US-natalie"
+
+
+# --- Optional: Simple session management helpers for the frontend ---
+class SessionSwitchRequest(BaseModel):
+    old_session_id: str | None = None
+
+
+@app.get("/agent/chat/history/{session_id}")
+async def get_history(session_id: str):
+    return {"history": chat_history.get(session_id, [])}
+
+
+@app.post("/session/switch")
+async def switch_session(payload: SessionSwitchRequest):
+    new_session_id = f"session_{int(asyncio.get_event_loop().time()*1000)}"
+    return {"session_id": new_session_id}
 
 # --- REFINED: Text-to-Speech Endpoint with Better Error Handling ---
 @app.post("/tts")
@@ -186,4 +204,84 @@ async def agent_chat(session_id: str, file: UploadFile = File(...)):
         "transcription": user_text,
         "llm_response": llm_text
     }
+
+
+# --- NEW: Basic WebSocket endpoint for streaming audio ---
+@app.websocket("/ws/audio/{session_id}")
+async def websocket_audio(websocket: WebSocket, session_id: str):
+    """
+    Minimal WebSocket handler that accepts binary audio frames from the client.
+    For demo purposes, it simulates LLM streaming messages back to the client.
+    """
+    await websocket.accept()
+    logging.info(f"WebSocket connected for session {session_id}")
+
+    # Reader task: consume incoming frames to keep the connection alive
+    async def reader():
+        try:
+            while True:
+                message = await websocket.receive()
+                if "bytes" in message and message["bytes"] is not None:
+                    # Discard or buffer PCM frames; here we just count them
+                    continue
+                if "text" in message and message["text"] is not None:
+                    # Basic ping/pong support
+                    try:
+                        payload = json.loads(message["text"]) if message["text"].strip().startswith("{") else None
+                        if payload and payload.get("type") == "ping":
+                            await websocket.send_text(json.dumps({"type": "pong"}))
+                    except Exception:
+                        pass
+        except WebSocketDisconnect:
+            logging.info(f"WebSocket disconnected (reader) for session {session_id}")
+        except Exception as e:
+            logging.error(f"WebSocket reader error: {e}")
+
+    # Writer: simulate transcription + LLM streaming sequence
+    async def writer():
+        try:
+            # Simulated partial transcription
+            await websocket.send_text(json.dumps({
+                "type": "transcription",
+                "transcript": "Listening…",
+                "end_of_turn": False,
+                "turn_is_formatted": False,
+                "turn_order": 1
+            }))
+            await asyncio.sleep(0.4)
+            await websocket.send_text(json.dumps({
+                "type": "transcription",
+                "transcript": "Sample question captured",
+                "end_of_turn": True,
+                "turn_is_formatted": True,
+                "turn_order": 1
+            }))
+
+            # Simulated LLM streaming
+            await websocket.send_text(json.dumps({"type": "llm_start", "transcript": "Sample question captured"}))
+            chunks = ["Here's a short ", "demo response ", "from the server."]
+            full = ""
+            for c in chunks:
+                await asyncio.sleep(0.25)
+                full += c
+                await websocket.send_text(json.dumps({"type": "llm_chunk", "text": c}))
+            await websocket.send_text(json.dumps({"type": "llm_complete", "full_response": full}))
+        except WebSocketDisconnect:
+            logging.info(f"WebSocket disconnected (writer) for session {session_id}")
+        except Exception as e:
+            logging.error(f"WebSocket writer error: {e}")
+            try:
+                await websocket.send_text(json.dumps({"type": "llm_error", "error": "Internal error"}))
+            except Exception:
+                pass
+
+    reader_task = asyncio.create_task(reader())
+    writer_task = asyncio.create_task(writer())
+    try:
+        await asyncio.gather(reader_task, writer_task)
+    finally:
+        for t in (reader_task, writer_task):
+            if not t.done():
+                t.cancel()
+        logging.info(f"WebSocket session closed for {session_id}")
 
