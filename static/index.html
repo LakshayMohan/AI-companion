@@ -9,6 +9,10 @@
 </head>
 <body>
     <div class="background-title">The Machine Mind</div>
+    <div class="top-actions">
+        <button id="newSessionBtn" class="top-btn">New Session</button>
+        <button id="settingsBtn" class="top-btn">Settings</button>
+    </div>
     <div class="agent-container">
         <h1>AI Companion</h1>
         <p>Press the button to speak and get an AI-powered response.</p>
@@ -38,6 +42,35 @@
             <div id="llmResponseOutput" class="response-box llm-box"></div>
         </div>
     </div>
+    <div id="sidebarOverlay" class="sidebar-overlay" style="display: none;"></div>
+    <aside id="settingsSidebar" class="sidebar">
+        <div class="sidebar-header">
+            <h3>Configuration</h3>
+            <button id="closeSidebarBtn" class="icon-btn" aria-label="Close settings">✕</button>
+        </div>
+        <div class="settings-form">
+            <label for="settingsMurfApiKey">MURF_API_KEY</label>
+            <input id="settingsMurfApiKey" type="password" placeholder="Enter Murf API key" autocomplete="off" />
+
+            <label for="settingsAssemblyApiKey">ASSEMBLYAI_API_KEY</label>
+            <input id="settingsAssemblyApiKey" type="password" placeholder="Enter AssemblyAI API key" autocomplete="off" />
+
+            <label for="settingsGeminiApiKey">GEMINI_API_KEY</label>
+            <input id="settingsGeminiApiKey" type="password" placeholder="Enter Gemini API key" autocomplete="off" />
+
+            <label for="settingsSpotifyClientId">SPOTIFY_CLIENT_ID</label>
+            <input id="settingsSpotifyClientId" type="text" placeholder="Enter Spotify Client ID" autocomplete="off" />
+
+            <label for="settingsSpotifyClientSecret">SPOTIFY_CLIENT_SECRET</label>
+            <input id="settingsSpotifyClientSecret" type="password" placeholder="Enter Spotify Client Secret" autocomplete="off" />
+
+            <label for="settingsOpenCageApiKey">OPENCAGE_API_KEY</label>
+            <input id="settingsOpenCageApiKey" type="password" placeholder="Enter OpenCage API key" autocomplete="off" />
+
+            <button id="saveSettingsBtn" class="save-btn">Save</button>
+            <p class="settings-note">Keys are stored locally in your browser and sent to this server for this session only.</p>
+        </div>
+    </aside>
     <script src="/static/script.js"></script>
 </body>
 </html>

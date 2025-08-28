@@ -41,6 +41,7 @@ app = FastAPI()
 
 # In-Memory Chat History Store (for demo purposes)
 chat_history = defaultdict(list)
+session_config_overrides = defaultdict(dict)
 
 # Mount static directory for frontend files
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -53,14 +54,26 @@ class TTSRequest(BaseModel):
     text: str
     voiceId: str = "en-US-natalie"
 
+class SessionConfig(BaseModel):
+    MURF_API_KEY: str | None = None
+    ASSEMBLYAI_API_KEY: str | None = None
+    GEMINI_API_KEY: str | None = None
+    SPOTIFY_CLIENT_ID: str | None = None
+    SPOTIFY_CLIENT_SECRET: str | None = None
+    OPENCAGE_API_KEY: str | None = None
+
 # --- REFINED: Text-to-Speech Endpoint with Better Error Handling ---
 @app.post("/tts")
 async def generate_tts(request: TTSRequest):
-    if not MURF_API_KEY:
+    # Allow per-session override if voice generation is triggered with a session header
+    request_session_id = None
+    # In this simple example, TTS is not session-specific from the client, so we use global or last-set env
+    effective_murf_key = MURF_API_KEY
+    if not effective_murf_key:
         logging.error("TTS endpoint called but MURF_API_KEY is missing.")
         raise HTTPException(status_code=500, detail="TTS service is not configured on the server.")
 
-    headers = {"api-key": MURF_API_KEY, "Content-Type": "application/json"}
+    headers = {"api-key": effective_murf_key, "Content-Type": "application/json"}
     payload = {"text": request.text, "voiceId": request.voiceId}
     
     try:
@@ -102,10 +115,17 @@ async def generate_fallback_audio(error_message: str = "I'm sorry, I'm having tr
 # --- REBUILT: Conversational Agent with Robust, Step-by-Step Error Handling ---
 @app.post("/agent/chat/{session_id}")
 async def agent_chat(session_id: str, file: UploadFile = File(...)):
+    # Resolve per-session effective keys (fallback to env)
+    overrides = session_config_overrides.get(session_id, {})
+    effective_assembly_key = overrides.get("ASSEMBLYAI_API_KEY") or ASSEMBLYAI_API_KEY
+    effective_gemini_key = overrides.get("GEMINI_API_KEY") or GEMINI_API_KEY
+    effective_murf_key = overrides.get("MURF_API_KEY") or MURF_API_KEY
+
     # 1. Transcribe audio with AssemblyAI
     try:
-        if not ASSEMBLYAI_API_KEY:
+        if not effective_assembly_key:
             raise ValueError("AssemblyAI API key is not configured.")
+        aai.settings.api_key = effective_assembly_key
         transcriber = aai.Transcriber()
         transcript = transcriber.transcribe(file.file)
 
@@ -128,9 +148,9 @@ async def agent_chat(session_id: str, file: UploadFile = File(...)):
 
     # 2. Generate response with Gemini LLM
     try:
-        if not GEMINI_API_KEY:
+        if not effective_gemini_key:
             raise ValueError("Gemini API key is not configured.")
-            
+        genai.configure(api_key=effective_gemini_key)
         model = genai.GenerativeModel('gemini-1.5-flash')
         conversation = model.start_chat(history=chat_history[session_id][:-1]) # Pass history without the latest user message
         llm_response = conversation.send_message(user_text)
@@ -152,11 +172,11 @@ async def agent_chat(session_id: str, file: UploadFile = File(...)):
 
     # 3. Generate TTS with Murf from LLM response
     try:
-        if not MURF_API_KEY:
+        if not effective_murf_key:
             raise ValueError("Murf API key is not configured.")
             
         murf_text = llm_text[:2900]
-        headers = {"api-key": MURF_API_KEY, "Content-Type": "application/json"}
+        headers = {"api-key": effective_murf_key, "Content-Type": "application/json"}
         payload = {"text": murf_text, "voiceId": "en-US-marcus"}
         
         async with httpx.AsyncClient(timeout=90) as client:
@@ -186,4 +206,19 @@ async def agent_chat(session_id: str, file: UploadFile = File(...)):
         "transcription": user_text,
         "llm_response": llm_text
     }
+
+
+# --- NEW: Session configuration endpoint ---
+@app.post("/config/{session_id}")
+async def set_session_config(session_id: str, cfg: SessionConfig):
+    # Store only provided keys; ignore None/empty
+    clean = {}
+    for k, v in cfg.dict().items():
+        if v:
+            clean[k] = v
+    session_config_overrides[session_id].update(clean)
+    # Log minimal info for debugging without exposing secrets
+    redacted = {k: ("***" if v else None) for k, v in clean.items()}
+    logging.info(f"Updated session config for {session_id}: {redacted}")
+    return {"ok": True}
 

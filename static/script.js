@@ -9,6 +9,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const transcriptionOutput = document.getElementById("transcriptionOutput");
     const llmResponseContainer = document.getElementById("llm-response-container");
     const llmResponseOutput = document.getElementById("llmResponseOutput");
+    const newSessionBtn = document.getElementById('newSessionBtn');
+    const settingsBtn = document.getElementById('settingsBtn');
+    const sidebar = document.getElementById('settingsSidebar');
+    const sidebarOverlay = document.getElementById('sidebarOverlay');
+    const closeSidebarBtn = document.getElementById('closeSidebarBtn');
+    const saveSettingsBtn = document.getElementById('saveSettingsBtn');
+    const inputMurf = document.getElementById('settingsMurfApiKey');
+    const inputAssembly = document.getElementById('settingsAssemblyApiKey');
+    const inputGemini = document.getElementById('settingsGeminiApiKey');
+    const inputSpotifyId = document.getElementById('settingsSpotifyClientId');
+    const inputSpotifySecret = document.getElementById('settingsSpotifyClientSecret');
+    const inputOpenCage = document.getElementById('settingsOpenCageApiKey');
 
     // --- State Variables ---
     let mediaRecorder, audioChunks = [], sessionId = null, isRecording = false;
@@ -22,6 +34,8 @@ document.addEventListener('DOMContentLoaded', () => {
         sessionId = params.get('session_id') || `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         const newUrl = `${window.location.pathname}?session_id=${sessionId}`;
         window.history.replaceState({ path: newUrl }, '', newUrl);
+        // Load any saved settings on page load
+        loadSettingsIntoForm();
     };
     
     // --- Core Functionality ---
@@ -38,6 +52,39 @@ document.addEventListener('DOMContentLoaded', () => {
             startRecording();
         }
     });
+
+    // --- Top Actions: New Session and Settings ---
+    if (newSessionBtn) {
+        newSessionBtn.addEventListener('click', () => {
+            const newId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            const newUrl = `${window.location.pathname}?session_id=${newId}`;
+            window.location.href = newUrl;
+        });
+    }
+
+    function openSidebar() {
+        sidebar.classList.add('open');
+        sidebarOverlay.style.display = 'block';
+        loadSettingsIntoForm();
+    }
+    function closeSidebar() {
+        sidebar.classList.remove('open');
+        sidebarOverlay.style.display = 'none';
+    }
+
+    if (settingsBtn) settingsBtn.addEventListener('click', openSidebar);
+    if (closeSidebarBtn) closeSidebarBtn.addEventListener('click', closeSidebar);
+    if (sidebarOverlay) sidebarOverlay.addEventListener('click', closeSidebar);
+
+    if (saveSettingsBtn) {
+        saveSettingsBtn.addEventListener('click', async () => {
+            const settings = collectSettingsFromForm();
+            saveSettingsToLocalStorage(settings);
+            await syncSettingsToServer(settings);
+            closeSidebar();
+            statusDisplay.textContent = 'Settings saved for this session.';
+        });
+    }
 
     // --- Initialize Audio Context and Analyser ---
     function setupAudioContext() {
@@ -94,6 +141,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         const formData = new FormData();
         formData.append("file", audioBlob, "user_recording.webm");
+        // Attach per-session overrides if present
+        const overrides = loadSettingsFromLocalStorage();
+        if (overrides) {
+            for (const [key, value] of Object.entries(overrides)) {
+                if (value) formData.append(key, value);
+            }
+        }
         try {
             const response = await fetch(`/agent/chat/${sessionId}`, { method: "POST", body: formData });
             const data = await response.json();
@@ -214,6 +268,55 @@ document.addEventListener('DOMContentLoaded', () => {
         if (llmResponse) {
             llmResponseOutput.textContent = llmResponse;
             llmResponseContainer.style.display = "block";
+        }
+    }
+
+    // --- Settings Helpers ---
+    function storageKey() { return 'ai_companion_settings_v1'; }
+
+    function collectSettingsFromForm() {
+        return {
+            MURF_API_KEY: inputMurf?.value?.trim() || '',
+            ASSEMBLYAI_API_KEY: inputAssembly?.value?.trim() || '',
+            GEMINI_API_KEY: inputGemini?.value?.trim() || '',
+            SPOTIFY_CLIENT_ID: inputSpotifyId?.value?.trim() || '',
+            SPOTIFY_CLIENT_SECRET: inputSpotifySecret?.value?.trim() || '',
+            OPENCAGE_API_KEY: inputOpenCage?.value?.trim() || ''
+        };
+    }
+
+    function saveSettingsToLocalStorage(settings) {
+        try { localStorage.setItem(storageKey(), JSON.stringify(settings)); } catch {}
+    }
+
+    function loadSettingsFromLocalStorage() {
+        try {
+            const raw = localStorage.getItem(storageKey());
+            return raw ? JSON.parse(raw) : null;
+        } catch { return null; }
+    }
+
+    function loadSettingsIntoForm() {
+        const saved = loadSettingsFromLocalStorage();
+        if (!saved) return;
+        if (inputMurf) inputMurf.value = saved.MURF_API_KEY || '';
+        if (inputAssembly) inputAssembly.value = saved.ASSEMBLYAI_API_KEY || '';
+        if (inputGemini) inputGemini.value = saved.GEMINI_API_KEY || '';
+        if (inputSpotifyId) inputSpotifyId.value = saved.SPOTIFY_CLIENT_ID || '';
+        if (inputSpotifySecret) inputSpotifySecret.value = saved.SPOTIFY_CLIENT_SECRET || '';
+        if (inputOpenCage) inputOpenCage.value = saved.OPENCAGE_API_KEY || '';
+    }
+
+    async function syncSettingsToServer(settings) {
+        try {
+            const res = await fetch(`/config/${sessionId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(settings)
+            });
+            await res.json().catch(() => ({}));
+        } catch (e) {
+            console.warn('Failed to sync settings to server', e);
         }
     }
 });
