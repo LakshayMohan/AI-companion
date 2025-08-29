@@ -444,6 +444,27 @@ h4 {
     box-shadow: 0 6px 24px rgba(0,0,0,0.6);
 }
 
+/* Config button */
+.config-button.top-right {
+    position: fixed;
+    top: 18px;
+    right: 110px;
+    z-index: 60;
+    background: rgba(0,0,0,0.3);
+    border: 1px solid rgba(255,255,255,0.08);
+    padding: 8px 12px;
+    border-radius: 10px;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.6);
+    color: #fff;
+    cursor: pointer;
+    font-size: 0.9rem;
+    right: 130px;
+}
+
+.config-button:hover {
+    background: rgba(0,0,0,0.5);
+}
+
 .chat-container {
     width: 100%;
     margin-top: 20px;
@@ -668,7 +689,7 @@ h4 {
     align-items: flex-start;
     justify-content: flex-end;
     padding-top: 56px; /* push down a bit from the top */
-    padding-right: 18px; /* align near the button */
+    padding-right: 20px; /* align near the button */
 }
 .confirm-box {
     background: #0f0f12;
@@ -742,3 +763,90 @@ h4 {
     100% { opacity: 0; transform: translateX(-50%) scale(1.12); }
 }
 .confirm-actions { display:flex; gap:12px; justify-content:center; margin-top:12px; }
+
+/* Config modal */
+.config-modal {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0,0,0,0.6);
+    z-index: 50;
+}
+
+.config-box {
+    background: #0f0f12;
+    padding: 20px;
+    border-radius: 12px;
+    border: 1px solid rgba(255,255,255,0.06);
+    width: 400px;
+    max-width: 90vw;
+    text-align: left;
+}
+
+.config-box h3 {
+    margin: 0 0 20px 0;
+    color: #fff;
+    font-size: 1.2rem;
+}
+
+.config-section {
+    margin-bottom: 20px;
+}
+
+.config-section h4 {
+    margin: 0 0 10px 0;
+    color: #9966ff;
+    font-size: 1rem;
+    text-transform: uppercase;
+    font-weight: 600;
+    letter-spacing: 1px;
+}
+
+.config-section label {
+    display: block;
+    margin-bottom: 5px;
+    color: #e0e0e0;
+    font-size: 0.9rem;
+}
+
+.config-section input {
+    width: 100%;
+    padding: 8px 12px;
+    margin-bottom: 10px;
+    background: rgba(0,0,0,0.3);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 6px;
+    color: #e0e0e0;
+    font-size: 0.9rem;
+    box-sizing: border-box;
+}
+
+.config-section input:focus {
+    outline: none;
+    border-color: #9966ff;
+    box-shadow: 0 0 0 2px rgba(153, 102, 255, 0.2);
+}
+
+.config-actions {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+    margin-top: 20px;
+}
+
+.close-modal {
+    position: absolute;
+    right: 20px;
+    top: 18px;
+    background: transparent;
+    border: none;
+    font-size: 20px;
+    color: #ddd;
+    cursor: pointer;
+}
+
+.close-modal:hover {
+    color: #fff;
+}
