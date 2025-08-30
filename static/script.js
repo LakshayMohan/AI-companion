@@ -5,10 +5,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const recordBtnText = document.getElementById('recordBtnText');
     const statusDisplay = document.getElementById("status");
     const responseAudio = document.getElementById("responseAudio");
-    // Prevent the <audio> element from playing sound directly to the output device.
-    // We use a MediaElementSourceNode to route audio through the AudioContext so
-    // mute the element itself to avoid double/duplicate output (native + AudioContext).
-    if (responseAudio) responseAudio.muted = true;
     const audioVisualizer = document.getElementById('audioVisualizer');
     const transcriptionContainer = document.getElementById("transcription-container");
     const transcriptionOutput = document.getElementById("transcriptionOutput");
@@ -25,8 +21,12 @@ document.addEventListener('DOMContentLoaded', () => {
     let mediaRecorder, audioChunks = [], sessionId = null, isRecording = false;
     let microphoneSource = null, animationId = null;
     let websocket = null;
-    let processor = null;
+    let processor = null; // legacy (deprecated) - will be phased out
     let workletNode = null;
+    // Modern fallback using MediaStreamTrackProcessor
+    let trackProcessor = null;
+    let trackReader = null;
+    let trackProcessing = false;
     let base64AudioChunks = [];
     let stream = null;
     
@@ -38,7 +38,21 @@ document.addEventListener('DOMContentLoaded', () => {
     const playbackAnalyser = audioContext.createAnalyser();
     micAnalyser.fftSize = 256;
     playbackAnalyser.fftSize = 256;
-    const responseSourceNode = audioContext.createMediaElementSource(responseAudio);
+    // Create a MediaElementSourceNode if the audio element exists and AudioContext allows it.
+    let responseSourceNode = null;
+    try {
+        if (responseAudio) {
+            responseSourceNode = audioContext.createMediaElementSource(responseAudio);
+            // If we created a source node, keep the audio element muted to avoid double output
+            responseAudio.muted = true;
+        }
+    } catch (e) {
+        // Some browsers may throw when creating a MediaElementSource (e.g., if already used elsewhere)
+        console.warn('Could not create MediaElementSourceNode for responseAudio:', e);
+        responseSourceNode = null;
+        // Ensure audio element is not muted so playback still works
+        if (responseAudio) responseAudio.muted = false;
+    }
 
     // --- Session Management ---
     window.onload = () => {
@@ -176,7 +190,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsUrl = `${protocol}//${window.location.host}/ws/audio/${sessionId}`;
         
-        try {
+    try {
             websocket = new WebSocket(wsUrl);
             
             websocket.onopen = () => {
@@ -510,22 +524,28 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
 
-    musicBarPlay.addEventListener('click', () => {
-        if (audioPlayer.paused) {
-            audioPlayer.play();
-            musicBarPlay.textContent = '⏸';
-        } else {
-            audioPlayer.pause();
-            musicBarPlay.textContent = '▶';
-        }
-    });
+    if (musicBarPlay) {
+        musicBarPlay.addEventListener('click', () => {
+            if (audioPlayer.paused) {
+                audioPlayer.play();
+                musicBarPlay.textContent = '⏸';
+            } else {
+                audioPlayer.pause();
+                musicBarPlay.textContent = '▶';
+            }
+        });
+    }
 
-    playerPrevBtn.addEventListener('click', () => {
-        if (currentTrackIndex > 0) startPlayback(currentPlaylist, currentTrackIndex - 1);
-    });
-    playerNextBtn.addEventListener('click', () => {
-        if (currentTrackIndex < currentPlaylist.length - 1) startPlayback(currentPlaylist, currentTrackIndex + 1);
-    });
+    if (playerPrevBtn) {
+        playerPrevBtn.addEventListener('click', () => {
+            if (currentTrackIndex > 0) startPlayback(currentPlaylist, currentTrackIndex - 1);
+        });
+    }
+    if (playerNextBtn) {
+        playerNextBtn.addEventListener('click', () => {
+            if (currentTrackIndex < currentPlaylist.length - 1) startPlayback(currentPlaylist, currentTrackIndex + 1);
+        });
+    }
 
     // click handler for playlist cards (delegate)
     document.addEventListener('click', (e) => {
@@ -541,30 +561,51 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
     // --- Record Button ---
-    recordBtn.addEventListener('click', () => {
-        audioContext.resume();
-        if (isRecording) stopRecording();
-        else startRecording();
-    });
+    if (!recordBtn) {
+        console.warn('recordBtn element not found in DOM');
+    } else {
+        recordBtn.addEventListener('click', () => {
+        //console.log('Record button clicked. isRecording=', isRecording);
+        audioContext.resume().catch(e => console.warn('audioContext.resume failed', e));
+        if (isRecording) {
+            try { stopRecording(); } catch (e) { console.error('stopRecording failed', e); }
+        } else {
+            try { startRecording(); } catch (e) { console.error('startRecording failed', e); statusDisplay.textContent = 'Could not start recording.'; }
+        }
+        });
+    }
     
-    stopAudioBtn.addEventListener('click', () => {
-        responseAudio.pause();
-        responseAudio.currentTime = 0;
-        stopPulseEffect();
-        statusDisplay.textContent = "Playback stopped.";
-        stopAudioBtn.style.display = 'none';
-        disconnectPlayback();
-    });
+    if (stopAudioBtn) {
+        stopAudioBtn.addEventListener('click', () => {
+            try { if (responseAudio) { responseAudio.pause(); responseAudio.currentTime = 0; } } catch(_){}
+            stopPulseEffect();
+            if (statusDisplay) statusDisplay.textContent = "Playback stopped.";
+            stopAudioBtn.style.display = 'none';
+            try { disconnectPlayback(); } catch(_){}
+        });
+    }
 
 
 
     function disconnectRecording() {
         if (microphoneSource) {
-            microphoneSource.disconnect();
+            try { microphoneSource.disconnect(); } catch(_){}
             microphoneSource = null;
         }
-        if (processor) { try { processor.disconnect(); } catch(_){} processor = null; }
-        if (workletNode) { try { workletNode.disconnect(); } catch(_){} workletNode = null; }
+        if (processor) { // legacy
+            try { processor.disconnect?.(); } catch(_){ }
+            try { processor.onaudioprocess = null; } catch(_){ }
+            processor = null;
+        }
+        // Stop modern track processing
+        trackProcessing = false;
+        if (trackReader) { try { trackReader.cancel(); } catch(_){} trackReader = null; }
+        if (trackProcessor) { trackProcessor = null; }
+        if (workletNode) {
+            try { if (workletNode.port) { workletNode.port.onmessage = null; workletNode.port.onmessageerror = null; } } catch(_){}
+            try { workletNode.disconnect(); } catch(_){}
+            workletNode = null;
+        }
         if (stream) {
             stream.getTracks().forEach(track => track.stop());
             stream = null;
@@ -607,13 +648,72 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (websocket && websocket.readyState === WebSocket.OPEN) {
                         // Forward PCM16 buffer directly from the worklet
                         if (e.data && e.data.byteLength) {
-                            websocket.send(e.data);
+                            try { websocket.send(e.data); } catch (err) { console.warn('WS send failed (worklet)', err); }
                         }
                     }
+                };
+                workletNode.port.onmessageerror = (ev) => {
+                    console.warn('Worklet port messageerror', ev);
                 };
                 microphoneSource.connect(workletNode);
             } catch (e) {
                 console.error('AudioWorklet init failed');
+            }
+
+            // If AudioWorklet failed or is unavailable, fall back to MediaStreamTrackProcessor (modern API)
+            if (!workletNode) {
+                const track = stream.getAudioTracks()[0];
+                if (window.MediaStreamTrackProcessor && track) {
+                    try {
+                        const TARGET_RATE = 16000; // desired sample rate
+                        trackProcessor = new MediaStreamTrackProcessor({ track });
+                        trackReader = trackProcessor.readable.getReader();
+                        trackProcessing = true;
+
+                        const downsample = (float32, inRate, outRate) => {
+                            if (inRate === outRate) return float32;
+                            const ratio = inRate / outRate;
+                            const outLength = Math.floor(float32.length / ratio);
+                            const out = new Float32Array(outLength);
+                            let idx = 0, pos = 0;
+                            while (idx < outLength) { out[idx++] = float32[Math.floor(pos)]; pos += ratio; }
+                            return out;
+                        };
+
+                        (async () => {
+                            while (trackProcessing) {
+                                let result;
+                                try { result = await trackReader.read(); } catch (err) { console.warn('Track read error', err); break; }
+                                if (!result || result.done) break;
+                                const audioData = result.value; // AudioData
+                                try {
+                                    const frames = audioData.numberOfFrames;
+                                    const sampleRate = audioData.sampleRate || 48000;
+                                    const plane = new Float32Array(frames);
+                                    audioData.copyTo(plane, { planeIndex: 0 });
+                                    const mono = downsample(plane, sampleRate, TARGET_RATE);
+                                    const int16 = new Int16Array(mono.length);
+                                    for (let i = 0; i < mono.length; i++) {
+                                        let s = mono[i];
+                                        if (s > 1) s = 1; else if (s < -1) s = -1;
+                                        int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                                    }
+                                    if (websocket && websocket.readyState === WebSocket.OPEN) {
+                                        try { websocket.send(int16.buffer); } catch (_) {}
+                                    }
+                                } catch (procErr) {
+                                    console.warn('TrackProcessor processing error', procErr);
+                                } finally {
+                                    try { audioData.close(); } catch (_) {}
+                                }
+                            }
+                        })();
+                    } catch (err) {
+                        console.error('MediaStreamTrackProcessor fallback failed', err);
+                    }
+                } else {
+                    console.warn('MediaStreamTrackProcessor unsupported and AudioWorklet failed; streaming disabled.');
+                }
             }
             
             startPulseEffect('recording');
