@@ -1,112 +1,175 @@
 // script.js
-console.log('Script loaded successfully');
+document.addEventListener('DOMContentLoaded', () => {
+    // --- UI Elements ---
+    const recordBtn = document.getElementById('recordBtn');
+    const recordBtnText = document.getElementById('recordBtnText');
+    const statusDisplay = document.getElementById("status");
+    const responseAudio = document.getElementById("responseAudio");
+    // Prevent the <audio> element from playing sound directly to the output device.
+    // We use a MediaElementSourceNode to route audio through the AudioContext so
+    // mute the element itself to avoid double/duplicate output (native + AudioContext).
+    if (responseAudio) responseAudio.muted = true;
+    const audioVisualizer = document.getElementById('audioVisualizer');
+    const transcriptionContainer = document.getElementById("transcription-container");
+    const transcriptionOutput = document.getElementById("transcriptionOutput");
+    const llmResponseContainer = document.getElementById("llm-response-container");
+    const llmResponseOutput = document.getElementById("llmResponseOutput");
+    const chatContainer = document.getElementById('chat-container');
+    const switchSessionBtn = document.getElementById('switchSessionBtn');
+    const stopAudioBtn = document.getElementById('stopAudioBtn');
+    const websocketStatus = document.getElementById('websocket-status');
+    const transcriptionStatus = document.getElementById('transcription-status');
 
-// Fallback: if DOM is already loaded, run setup immediately
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => {
-        console.log('DOMContentLoaded event fired');
-        setupConfigButton();
+
+    // --- State & Audio Variables ---
+    let mediaRecorder, audioChunks = [], sessionId = null, isRecording = false;
+    let microphoneSource = null, animationId = null;
+    let websocket = null;
+    let processor = null;
+    let workletNode = null;
+    let base64AudioChunks = [];
+    let stream = null;
+    
+    // --- Audio Contexts and Analyser Nodes ---
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)({
+        sampleRate: 16000  // Set to 16kHz for AssemblyAI compatibility
     });
-} else {
-    // DOM already loaded
-    console.log('DOM already loaded, running setup immediately');
-    setupConfigButton();
-}
+    const micAnalyser = audioContext.createAnalyser();
+    const playbackAnalyser = audioContext.createAnalyser();
+    micAnalyser.fftSize = 256;
+    playbackAnalyser.fftSize = 256;
+    const responseSourceNode = audioContext.createMediaElementSource(responseAudio);
 
-function setupConfigButton() {
-    console.log('Setting up config button...');
+    // --- Session Management ---
+    window.onload = () => {
+        const params = new URLSearchParams(window.location.search);
+        sessionId = params.get('session_id') || `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        window.history.replaceState({ path: `${window.location.pathname}?session_id=${sessionId}` }, '', `${window.location.pathname}?session_id=${sessionId}`);
+        // Load any existing chat history for this session
+        loadChatHistory(sessionId).catch(() => {});
+    };
 
-    // --- Config Modal ---
-    const configBtn = document.getElementById('configBtn');
-    const configModal = document.getElementById('configModal');
-    const closeConfigModal = document.getElementById('closeConfigModal');
-    const saveConfig = document.getElementById('saveConfig');
-    const cancelConfig = document.getElementById('cancelConfig');
+    // Switch session button -> show confirmation modal, then create new session and clear UI + memory
+    if (switchSessionBtn) {
+        const confirmModal = document.getElementById('confirmModal');
+        const confirmYesBtn = document.getElementById('confirmYes');
+        const confirmNoBtn = document.getElementById('confirmNo');
 
-    // Input elements
-    const murfKey = document.getElementById('murfKey');
-    const assemblyKey = document.getElementById('assemblyKey');
-    const geminiKey = document.getElementById('geminiKey');
-    const opencageKey = document.getElementById('opencageKey');
-    const spotifyClientId = document.getElementById('spotifyClientId');
-    const spotifyClientSecret = document.getElementById('spotifyClientSecret');
-
-    // Load saved API keys on page load
-    function loadApiKeys() {
-        if (murfKey) murfKey.value = localStorage.getItem('MURF_API_KEY') || '';
-        if (assemblyKey) assemblyKey.value = localStorage.getItem('ASSEMBLYAI_API_KEY') || '';
-        if (geminiKey) geminiKey.value = localStorage.getItem('GEMINI_API_KEY') || '';
-        if (opencageKey) opencageKey.value = localStorage.getItem('OPENCAGE_API_KEY') || '';
-        if (spotifyClientId) spotifyClientId.value = localStorage.getItem('SPOTIFY_CLIENT_ID') || '';
-        if (spotifyClientSecret) spotifyClientSecret.value = localStorage.getItem('SPOTIFY_CLIENT_SECRET') || '';
-    }
-
-    // Save API keys to localStorage
-    function saveApiKeys() {
-        if (murfKey) localStorage.setItem('MURF_API_KEY', murfKey.value);
-        if (assemblyKey) localStorage.setItem('ASSEMBLYAI_API_KEY', assemblyKey.value);
-        if (geminiKey) localStorage.setItem('GEMINI_API_KEY', geminiKey.value);
-        if (opencageKey) localStorage.setItem('OPENCAGE_API_KEY', opencageKey.value);
-        if (spotifyClientId) localStorage.setItem('SPOTIFY_CLIENT_ID', spotifyClientId.value);
-        if (spotifyClientSecret) localStorage.setItem('SPOTIFY_CLIENT_SECRET', spotifyClientSecret.value);
-    }
-
-    // Config button click handler
-    if (configBtn) {
-        console.log('Config button found, adding click handler');
-        configBtn.addEventListener('click', function() {
-            console.log('Config button clicked');
-            loadApiKeys();
-            if (configModal) {
-                configModal.style.display = 'flex';
+        // Open modal on click and position the confirm box over the switch button
+        function hideConfirmModal() {
+            if (confirmModal) confirmModal.style.display = 'none';
+            if (confirmModal) {
+                const cb = confirmModal.querySelector('.confirm-box');
+                if (cb) {
+                    cb.style.position = '';
+                    cb.style.left = '';
+                    cb.style.top = '';
+                    cb.style.right = '';
+                }
+            // clear overlay hole variables
+            confirmModal.style.removeProperty('--hole-left');
+            confirmModal.style.removeProperty('--hole-top');
+            confirmModal.style.removeProperty('--hole-radius');
             }
-        });
-    } else {
-        console.error('Config button not found!');
-    }
+        }
 
-    // Close config modal
-    if (closeConfigModal) {
-        closeConfigModal.addEventListener('click', () => {
-            if (configModal) configModal.style.display = 'none';
-        });
-    }
+        switchSessionBtn.addEventListener('click', () => {
+            if (!confirmModal) return;
+            // show overlay
+            confirmModal.style.display = 'block';
+            const confirmBox = confirmModal.querySelector('.confirm-box');
+            if (!confirmBox) return;
 
-    // Cancel config
-    if (cancelConfig) {
-        cancelConfig.addEventListener('click', () => {
-            if (configModal) configModal.style.display = 'none';
-        });
-    }
+            // compute button rect and position the box so it appears above/beside the button
+            const rect = switchSessionBtn.getBoundingClientRect();
 
-    // Save config
-    if (saveConfig) {
-        saveConfig.addEventListener('click', () => {
-            saveApiKeys();
-            if (configModal) configModal.style.display = 'none';
-            // Optional: Show success message
-            const statusDisplay = document.getElementById('status');
-            if (statusDisplay) {
-                statusDisplay.textContent = 'API keys saved successfully!';
-                setTimeout(() => {
-                    statusDisplay.textContent = 'Ready to start';
-                }, 2000);
+            // ensure the box is rendered so offsetWidth is available
+            confirmBox.style.position = 'fixed';
+            confirmBox.style.left = '0px';
+            confirmBox.style.top = '0px';
+            // allow browser to paint and measure
+            const boxW = confirmBox.offsetWidth || 320;
+            const boxH = confirmBox.offsetHeight || 120;
+
+            // prefer to place the box just below the button; if not enough space, place above
+            const spaceBelow = window.innerHeight - rect.bottom;
+            let top = rect.bottom + 8; // below button
+            if (spaceBelow < boxH + 12) {
+                top = rect.top - boxH - 8; // place above
             }
-        });
-    }
 
-    // Close modal when clicking outside
-    if (configModal) {
-        configModal.addEventListener('click', (e) => {
-            if (e.target === configModal) {
-                configModal.style.display = 'none';
+            // right-align box to button's right edge, but keep inside viewport
+            let left = rect.right - boxW;
+            if (left < 8) left = 8;
+            if (left + boxW > window.innerWidth - 8) left = window.innerWidth - boxW - 8;
+
+            confirmBox.style.left = `${left}px`;
+            confirmBox.style.top = `${Math.max(8, top)}px`;
+            confirmBox.style.right = '';
+
+            // decide caret orientation and add class
+            confirmBox.classList.remove('below', 'above', 'animate-pop');
+            if (top > rect.top) {
+                // we placed below
+                confirmBox.classList.add('below');
+                confirmBox.style.setProperty('--pop-y', '12px');
+            } else {
+                confirmBox.classList.add('above');
+                confirmBox.style.setProperty('--pop-y', '-12px');
             }
-        });
-    }
 
-    // Load API keys on page load
-    loadApiKeys();
-}
+            // set overlay hole variables on the modal so the background is transparent around the button
+            const holeX = rect.left + rect.width / 2;
+            const holeY = rect.top + rect.height / 2;
+            const holeRadius = Math.max(rect.width, rect.height) * 0.9;
+            confirmModal.style.setProperty('--hole-left', `${holeX}px`);
+            confirmModal.style.setProperty('--hole-top', `${holeY}px`);
+            confirmModal.style.setProperty('--hole-radius', `${holeRadius}px`);
+
+            // set caret horizontal position (approx) via left on ::after by adjusting a padding-left variable
+            // we position caret via left offset from the confirm box's left; compute relative
+            const caretLeft = Math.min(boxW - 36, Math.max(18, rect.right - left - 12));
+            confirmBox.style.setProperty('--caret-left', `${caretLeft}px`);
+
+            // animate pop
+            setTimeout(() => confirmBox.classList.add('animate-pop'), 10);
+        });
+
+        // Cancel: just hide the modal
+        if (confirmNoBtn) {
+            confirmNoBtn.addEventListener('click', () => {
+                hideConfirmModal();
+            });
+        }
+
+        // Confirm: call server to switch session and clear UI
+        if (confirmYesBtn) {
+            confirmYesBtn.addEventListener('click', async () => {
+                // hide immediately while processing
+                hideConfirmModal();
+                try {
+                    const res = await fetch('/session/switch', {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ old_session_id: sessionId })
+                    });
+                    const data = await res.json();
+                    if (data.session_id) {
+                        // close websocket and reset UI
+                        disconnectWebSocket();
+                        sessionId = data.session_id;
+                        window.history.replaceState({}, '', `${window.location.pathname}?session_id=${sessionId}`);
+                        // fully reset UI
+                        resetAllUI();
+                    } else {
+                        statusDisplay.textContent = 'Could not start new session.';
+                    }
+                } catch (e) {
+                    console.error('Failed to switch session', e);
+                    statusDisplay.textContent = 'Could not switch session.';
+                }
+            });
+        }
+    }
 
     // --- WebSocket Audio Streaming ---
     async function connectWebSocket() {
@@ -1016,13 +1079,6 @@ function setupConfigButton() {
             llmResponseContainer.style.display = "block";
         }
     }
-
-
-document.addEventListener('DOMContentLoaded', () => {
-    console.log('DOMContentLoaded event fired');
-    // Initialize all the functions that need DOM elements
-    // The setupConfigButton() is already called above
 });
-
 // --- End of script.js ---
 // This script handles audio recording, playback, and UI updates for the application.

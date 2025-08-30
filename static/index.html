@@ -11,7 +11,6 @@
 <body>
     <div class="background-title">The Machine Mind</div>
     <button id="switchSessionBtn" class="switch-session top-right">New Session</button>
-    <button id="configBtn" class="config-button top-right">⚙️ Config</button>
     <div class="agent-container">
         <div class="agent-header">
             <h1>AI Companion</h1>
@@ -37,64 +36,7 @@
             <!-- conversation bubbles will be appended here -->
         </div>
     </div>
-        <!-- Playlist modal -->
-        <div id="playlistModal" class="playlist-modal" style="display:none;">
-            <div class="playlist-modal-box">
-                <button id="closePlaylistModal" class="close-modal">×</button>
-                <h3 id="playlistModalTitle">Playlist</h3>
-                <div id="playlistTracks" class="playlist-tracks"></div>
-                <div class="player-controls">
-                    <button id="playerPrev">⏮</button>
-                    <button id="playerPlay">▶</button>
-                    <button id="playerNext">⏭</button>
-                    <div id="playerProgress" class="player-progress"><div class="player-progress-bar"></div></div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Bottom music bar -->
-        <div id="musicBar" class="music-bar" style="display:none;">
-            <img id="musicBarImage" src="/static/avatars/smile.png" class="music-bar-image" />
-            <div class="music-bar-meta">
-                <div id="musicBarTitle" class="music-bar-title">Track title</div>
-                <div id="musicBarArtist" class="music-bar-artist">Artist</div>
-            </div>
-            <div class="music-bar-controls">
-                <button id="musicBarPlay">▶</button>
-                <div id="musicBarProgress" class="music-bar-progress"><div class="music-bar-progress-fill"></div></div>
-            </div>
-            </div>
-        
-            <!-- Config modal -->
-            <div id="configModal" class="config-modal" style="display:none;">
-                <div class="config-box">
-                    <button id="closeConfigModal" class="close-modal">×</button>
-                    <h3>API Configuration</h3>
-                    <div class="config-section">
-                        <h4>General API Keys</h4>
-                        <label for="murfKey">MURF_API_KEY</label>
-                        <input type="password" id="murfKey" placeholder="Enter MURF API Key">
-                        <label for="assemblyKey">ASSEMBLYAI_API_KEY</label>
-                        <input type="password" id="assemblyKey" placeholder="Enter AssemblyAI API Key">
-                        <label for="geminiKey">GEMINI_API_KEY</label>
-                        <input type="password" id="geminiKey" placeholder="Enter Gemini API Key">
-                        <label for="opencageKey">OPENCAGE_API_KEY</label>
-                        <input type="password" id="opencageKey" placeholder="Enter OpenCage API Key">
-                    </div>
-                    <div class="config-section">
-                        <h4>Spotify</h4>
-                        <label for="spotifyClientId">CLIENT_ID</label>
-                        <input type="password" id="spotifyClientId" placeholder="Enter Spotify Client ID">
-                        <label for="spotifyClientSecret">CLIENT_SECRET</label>
-                        <input type="password" id="spotifyClientSecret" placeholder="Enter Spotify Client Secret">
-                    </div>
-                    <div class="config-actions">
-                        <button id="saveConfig" class="test-button">Save</button>
-                        <button id="cancelConfig" class="test-button">Cancel</button>
-                    </div>
-                </div>
-            </div>
-            <script src="/static/script.js"></script>
+    <script src="/static/script.js"></script>
     <div id="confirmModal" class="confirm-modal top-right" style="display:none;">
         <div class="confirm-box">
             <p>Start a new session? This will clear current chat history.</p>
