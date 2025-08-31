@@ -399,6 +399,15 @@ h4 {
     font-size: 1rem;
 }
 
+/* Simple search trigger note */
+.search-trigger-note {
+    font-size: 0.8rem;
+    color: #bfb6ff;
+    opacity: 0.9;
+    margin: 12px auto 0 auto;
+    max-width: 560px;
+}
+
 /* Config button in header */
 .config-button {
     /* Match the visual language of the New Session button so the two look cohesive */

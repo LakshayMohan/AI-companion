@@ -37,6 +37,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const cfg_tavily = document.getElementById('cfg_tavily');
     const cfg_spotify_id = document.getElementById('cfg_spotify_id');
     const cfg_spotify_secret = document.getElementById('cfg_spotify_secret');
+    const searchTriggerNote = document.getElementById('searchTriggerNote');
 
     // --- Security / input helpers ---
     // Required credentials are treated as sensitive and kept in sessionStorage (less persistent than localStorage)
@@ -65,6 +66,14 @@ document.addEventListener('DOMContentLoaded', () => {
     [cfg_murf, cfg_assemblyai, cfg_gemini].forEach(el => {
         if (el) el.addEventListener('input', onCredentialInputChange);
     });
+
+    // Show search trigger note only if Tavily key exists
+    function updateSearchTriggerNote() {
+        if (!searchTriggerNote) return;
+        const key = (cfg_tavily && cfg_tavily.value && cfg_tavily.value.trim()) || localStorage.getItem('cfg_tavily') || '';
+        searchTriggerNote.style.display = key ? 'block' : 'none';
+    }
+    updateSearchTriggerNote();
 
 
     // --- State & Audio Variables ---
@@ -345,6 +354,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     hideConfigError();
                     closeConfig();
                     updateRecordButtonState();
+                    updateSearchTriggerNote();
                     statusDisplay.textContent = 'Settings saved and applied.';
                 } catch (err) {
                     console.error('Failed to send keys to server', err && err.message ? err.message : err);
@@ -383,6 +393,8 @@ document.addEventListener('DOMContentLoaded', () => {
             if (statusDisplay) statusDisplay.classList.remove('error');
         } catch (e) {}
     }
+
+    // updateLiveSearchIndicator removed
 
     // Close when clicking on backdrop
     const backdropEl = document.getElementById('backdrop');

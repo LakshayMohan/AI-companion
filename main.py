@@ -470,8 +470,8 @@ class AudioStreamer:
 
             def is_search_query(t: str) -> bool:
                 lt = (t or '').lower()
-                search_markers = ['who is', 'what is', 'search for', 'find', 'look up', 'tell me about']
-                return any(m in lt for m in search_markers)
+                # Only trigger Tavily when the explicit phrase is used
+                return ('search the web' in lt) or ('serach the web' in lt)  # includes common misspelling
 
             async def answer_weather(text: str):
                 # extract location if present ("in London")
@@ -588,16 +588,21 @@ class AudioStreamer:
                 return
 
             if is_search_query(user_text):
-                answer = await answer_search(user_text)
-                try:
-                    await websocket.send_text(json.dumps({"type": "llm_start", "transcript": user_text}))
-                    await websocket.send_text(json.dumps({"type": "llm_chunk", "text": answer, "is_complete": True}))
-                    await websocket.send_text(json.dumps({"type": "llm_complete", "full_response": answer, "is_complete": True}))
-                    append_to_history(session_id, "user", user_text)
-                    append_to_history(session_id, "model", answer)
-                except Exception:
-                    pass
-                return
+                # If Tavily is configured, use it for quick web answers.
+                # If Tavily is NOT configured, fall back to the normal Gemini LLM flow
+                # so the LLM can answer the query from its own knowledge.
+                if TRAVILY_API_KEY and TavilyClient is not None:
+                    answer = await answer_search(user_text)
+                    try:
+                        await websocket.send_text(json.dumps({"type": "llm_start", "transcript": user_text}))
+                        await websocket.send_text(json.dumps({"type": "llm_chunk", "text": answer, "is_complete": True}))
+                        await websocket.send_text(json.dumps({"type": "llm_complete", "full_response": answer, "is_complete": True}))
+                        append_to_history(session_id, "user", user_text)
+                        append_to_history(session_id, "model", answer)
+                    except Exception:
+                        pass
+                    return
+                # else: no Tavily configured -> continue to LLM streaming (do not short-circuit)
 
             print(f"Starting LLM streaming for: {user_text}")
             
