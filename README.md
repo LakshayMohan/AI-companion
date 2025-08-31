@@ -1,5 +1,6 @@
+<div align="center">
 # AI Voice Companion
-
+</div>
 Comprehensive real‑time voice + AI companion with:
 
 * Low‑latency browser → server PCM audio streaming (WebSocket)
