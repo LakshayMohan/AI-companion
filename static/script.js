@@ -15,6 +15,56 @@ document.addEventListener('DOMContentLoaded', () => {
     const stopAudioBtn = document.getElementById('stopAudioBtn');
     const websocketStatus = document.getElementById('websocket-status');
     const transcriptionStatus = document.getElementById('transcription-status');
+    const configBtn = document.getElementById('configBtn');
+    const configSidebar = document.getElementById('configSidebar');
+    const saveConfigBtn = document.getElementById('saveConfig');
+    const closeConfigBtn = document.getElementById('closeConfig');
+
+    // Config form fields (client-only storage) - These map to server-side env vars described in main.py
+    // NOTE: The server reads keys from the .env file at startup. The client stores keys locally in localStorage
+    // for convenience during development/testing. The mapping is:
+    // cfg_murf -> MURF_API_KEY
+    // cfg_assemblyai -> ASSEMBLYAI_API_KEY
+    // cfg_gemini -> GEMINI_API_KEY
+    // cfg_opencage -> OPENCAGE_API_KEY (optional)
+    // cfg_tavily -> TRAVILY_API_KEY (optional)
+    // cfg_spotify_id -> CLIENT_ID (optional)
+    // cfg_spotify_secret -> CLIENT_SECRET (optional)
+    const cfg_murf = document.getElementById('cfg_murf');
+    const cfg_assemblyai = document.getElementById('cfg_assemblyai');
+    const cfg_gemini = document.getElementById('cfg_gemini');
+    const cfg_opencage = document.getElementById('cfg_opencage');
+    const cfg_tavily = document.getElementById('cfg_tavily');
+    const cfg_spotify_id = document.getElementById('cfg_spotify_id');
+    const cfg_spotify_secret = document.getElementById('cfg_spotify_secret');
+
+    // --- Security / input helpers ---
+    // Required credentials are treated as sensitive and kept in sessionStorage (less persistent than localStorage)
+    function safeStoreCredential(id, value) {
+        if (!id) return;
+        const v = (value || '').trim();
+        if (v === '') {
+            try { sessionStorage.removeItem(id); } catch (e) {}
+        } else {
+            try { sessionStorage.setItem(id, v); } catch (e) {}
+        }
+    }
+
+    function onCredentialInputChange(e) {
+        const id = e && e.target && e.target.id;
+        if (!id) return;
+        // Required keys kept in sessionStorage to reduce persistent footprint
+        if (id === 'cfg_murf' || id === 'cfg_assemblyai' || id === 'cfg_gemini') {
+            safeStoreCredential(id, e.target.value);
+        }
+        // Update the record button state live as the user types
+        updateRecordButtonState();
+    }
+
+    // attach live listeners so the record button enables immediately when fields are filled
+    [cfg_murf, cfg_assemblyai, cfg_gemini].forEach(el => {
+        if (el) el.addEventListener('input', onCredentialInputChange);
+    });
 
 
     // --- State & Audio Variables ---
@@ -185,6 +235,188 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // --- Config Sidebar behavior ---
+    function openConfig() {
+        if (!configSidebar) return;
+    configSidebar.setAttribute('aria-hidden', 'false');
+    if (configBtn) configBtn.setAttribute('aria-expanded', 'true');
+    // show backdrop and mark modal-open so background is dimmed and inactive
+    const backdrop = document.getElementById('backdrop');
+    if (backdrop) { backdrop.style.display = 'block'; backdrop.setAttribute('aria-hidden', 'false'); }
+    document.body.classList.add('modal-open');
+
+    // populate fields from localStorage when opening
+    // Required (sensitive): prefer sessionStorage to reduce persistent exposure
+    cfg_murf.value = sessionStorage.getItem('cfg_murf') || localStorage.getItem('cfg_murf') || '';
+    cfg_assemblyai.value = sessionStorage.getItem('cfg_assemblyai') || localStorage.getItem('cfg_assemblyai') || '';
+    cfg_gemini.value = sessionStorage.getItem('cfg_gemini') || localStorage.getItem('cfg_gemini') || '';
+    // Optional: keep in localStorage
+    cfg_opencage.value = localStorage.getItem('cfg_opencage') || '';
+    cfg_tavily.value = localStorage.getItem('cfg_tavily') || '';
+    cfg_spotify_id.value = localStorage.getItem('cfg_spotify_id') || '';
+    cfg_spotify_secret.value = localStorage.getItem('cfg_spotify_secret') || '';
+    }
+
+    function closeConfig() {
+        if (!configSidebar) return;
+        configSidebar.setAttribute('aria-hidden', 'true');
+        if (configBtn) {
+            configBtn.setAttribute('aria-expanded', 'false');
+            try { configBtn.focus(); } catch(e){}
+        }
+    const backdrop = document.getElementById('backdrop');
+    if (backdrop) { backdrop.style.display = 'none'; backdrop.setAttribute('aria-hidden', 'true'); }
+    document.body.classList.remove('modal-open');
+    }
+
+    // Ensure the config panel is visible within the scrolling container and focus the first field
+    function ensureConfigVisible() {
+        try {
+            const agent = document.querySelector('.agent-container');
+            if (agent) {
+                agent.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+            // focus first input
+            const firstInput = document.getElementById('cfg_murf');
+            if (firstInput) firstInput.focus();
+        } catch (e) {}
+    }
+
+    // call ensureConfigVisible when opening
+    const originalOpenConfig = openConfig;
+    openConfig = function() {
+        originalOpenConfig();
+        ensureConfigVisible();
+    };
+
+    if (configBtn) configBtn.addEventListener('click', openConfig);
+    if (closeConfigBtn) closeConfigBtn.addEventListener('click', closeConfig);
+
+    if (saveConfigBtn) {
+        saveConfigBtn.addEventListener('click', () => {
+            // Validate required keys before saving.
+            const murfVal = (cfg_murf && cfg_murf.value && cfg_murf.value.trim()) || sessionStorage.getItem('cfg_murf') || localStorage.getItem('cfg_murf') || '';
+            const assemblyVal = (cfg_assemblyai && cfg_assemblyai.value && cfg_assemblyai.value.trim()) || sessionStorage.getItem('cfg_assemblyai') || localStorage.getItem('cfg_assemblyai') || '';
+            const geminiVal = (cfg_gemini && cfg_gemini.value && cfg_gemini.value.trim()) || sessionStorage.getItem('cfg_gemini') || localStorage.getItem('cfg_gemini') || '';
+            // If any required key is missing, show inline error in the config panel and do not close
+            if (!murfVal || !assemblyVal || !geminiVal) {
+                showConfigError('Please provide MURF, AssemblyAI and Gemini API keys before saving.');
+                // Also set a brief status message
+                statusDisplay.textContent = 'Missing required API keys.';
+                statusDisplay.classList.add('error');
+                return;
+            }
+
+            // Clear any prior error
+            hideConfigError();
+
+            // Send required keys to server to configure runtime APIs
+            (async () => {
+                try {
+                    const res = await fetch('/config/keys', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            murf: cfg_murf.value.trim(),
+                            assemblyai: cfg_assemblyai.value.trim(),
+                            gemini: cfg_gemini.value.trim()
+                        })
+                    });
+                    if (!res.ok) {
+                        const body = await res.json().catch(() => ({}));
+                        const msg = body && body.detail ? body.detail : 'Server refused the API keys.';
+                        showConfigError(`Server error: ${msg}`);
+                        statusDisplay.textContent = 'Server rejected keys.';
+                        statusDisplay.classList.add('error');
+                        return;
+                    }
+
+                    // Save optional keys locally and sensitive keys to sessionStorage
+                    try {
+                        safeStoreCredential('cfg_murf', cfg_murf.value);
+                        safeStoreCredential('cfg_assemblyai', cfg_assemblyai.value);
+                        safeStoreCredential('cfg_gemini', cfg_gemini.value);
+                    } catch (e) {}
+                    try { localStorage.setItem('cfg_opencage', cfg_opencage.value.trim()); } catch (e) {}
+                    try { localStorage.setItem('cfg_tavily', cfg_tavily.value.trim()); } catch (e) {}
+                    try { localStorage.setItem('cfg_spotify_id', cfg_spotify_id.value.trim()); } catch (e) {}
+                    try { localStorage.setItem('cfg_spotify_secret', cfg_spotify_secret.value.trim()); } catch (e) {}
+
+                    hideConfigError();
+                    closeConfig();
+                    updateRecordButtonState();
+                    statusDisplay.textContent = 'Settings saved and applied.';
+                } catch (err) {
+                    console.error('Failed to send keys to server', err && err.message ? err.message : err);
+                    showConfigError('Could not reach server to apply keys.');
+                    statusDisplay.textContent = 'Network error saving keys.';
+                    statusDisplay.classList.add('error');
+                }
+            })();
+        });
+    }
+
+    // Inline config error element helpers
+    function showConfigError(msg) {
+        try {
+            let err = document.getElementById('configError');
+            if (!err) {
+                err = document.createElement('div');
+                err.id = 'configError';
+                err.setAttribute('role', 'alert');
+                err.className = 'config-error';
+                const inner = document.querySelector('.config-inner');
+                if (inner) inner.insertBefore(err, inner.firstChild);
+            }
+            err.textContent = msg;
+            err.style.display = 'block';
+            // focus the first missing input if possible
+            const firstMissing = (!cfg_murf.value || !cfg_murf.value.trim()) ? cfg_murf : ((!cfg_assemblyai.value || !cfg_assemblyai.value.trim()) ? cfg_assemblyai : cfg_gemini);
+            try { firstMissing.focus(); } catch (e) {}
+        } catch (e) { console.warn('Could not show config error', e); }
+    }
+
+    function hideConfigError() {
+        try {
+            const err = document.getElementById('configError');
+            if (err) { err.style.display = 'none'; }
+            if (statusDisplay) statusDisplay.classList.remove('error');
+        } catch (e) {}
+    }
+
+    // Close when clicking on backdrop
+    const backdropEl = document.getElementById('backdrop');
+    if (backdropEl) {
+        backdropEl.addEventListener('click', () => {
+            closeConfig();
+        });
+    }
+
+    // Disable Record if required keys are missing. Required: MURF, ASSEMBLYAI, GEMINI
+    function hasRequiredKeys() {
+    // Check current inputs first (user may be typing), then sessionStorage (sensitive), then localStorage
+    const murfVal = (cfg_murf && cfg_murf.value && cfg_murf.value.trim()) || sessionStorage.getItem('cfg_murf') || localStorage.getItem('cfg_murf') || '';
+    const assemblyVal = (cfg_assemblyai && cfg_assemblyai.value && cfg_assemblyai.value.trim()) || sessionStorage.getItem('cfg_assemblyai') || localStorage.getItem('cfg_assemblyai') || '';
+    const geminiVal = (cfg_gemini && cfg_gemini.value && cfg_gemini.value.trim()) || sessionStorage.getItem('cfg_gemini') || localStorage.getItem('cfg_gemini') || '';
+    return murfVal.trim() !== '' && assemblyVal.trim() !== '' && geminiVal.trim() !== '';
+    }
+
+    function updateRecordButtonState() {
+        if (!recordBtn) return;
+        if (hasRequiredKeys()) {
+            recordBtn.classList.remove('disabled');
+            recordBtn.disabled = false;
+            recordBtn.removeAttribute('aria-disabled');
+        } else {
+            recordBtn.classList.add('disabled');
+            recordBtn.disabled = true;
+            recordBtn.setAttribute('aria-disabled', 'true');
+        }
+    }
+
+    // Initialize based on saved config
+    updateRecordButtonState();
+
     // --- WebSocket Audio Streaming ---
     async function connectWebSocket() {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -299,8 +531,9 @@ document.addEventListener('DOMContentLoaded', () => {
             };
             
         } catch (error) {
-            console.error('Failed to connect WebSocket:', error);
-            statusDisplay.textContent = "Failed to connect WebSocket.";
+            // Minimal error reporting to avoid leaking details
+            console.error('Failed to connect WebSocket:', error && error.message ? error.message : error);
+            statusDisplay.textContent = 'Failed to connect WebSocket.';
             statusDisplay.classList.add('error');
         }
     }
@@ -319,7 +552,10 @@ document.addEventListener('DOMContentLoaded', () => {
     row.className = 'chat-row user';
     const avatar = document.createElement('div');
     avatar.className = 'avatar user';
-    avatar.innerHTML = '<img src="/static/avatars/happy-face.png" alt="user"/>';
+    const img = document.createElement('img');
+    img.setAttribute('src', '/static/avatars/happy-face.png');
+    img.setAttribute('alt', 'user');
+    avatar.appendChild(img);
     const bubble = document.createElement('div');
     bubble.className = 'chat-bubble user';
     bubble.textContent = text;
@@ -336,7 +572,10 @@ document.addEventListener('DOMContentLoaded', () => {
     row.className = 'chat-row ai';
     const avatar = document.createElement('div');
     avatar.className = 'avatar ai';
-    avatar.innerHTML = '<img src="/static/avatars/smile.png" alt="ai"/>';
+    const aiImg = document.createElement('img');
+    aiImg.setAttribute('src', '/static/avatars/smile.png');
+    aiImg.setAttribute('alt', 'ai');
+    avatar.appendChild(aiImg);
     const bubble = document.createElement('div');
     bubble.className = 'chat-bubble ai';
     bubble.textContent = '';
@@ -408,7 +647,10 @@ document.addEventListener('DOMContentLoaded', () => {
         // append a placeholder avatar at right for ai style
         const avatar = document.createElement('div');
         avatar.className = 'avatar ai';
-        avatar.innerHTML = '<img src="/static/avatars/smile.png" alt="ai"/>';
+        const aiImg2 = document.createElement('img');
+        aiImg2.setAttribute('src', '/static/avatars/smile.png');
+        aiImg2.setAttribute('alt', 'ai');
+        avatar.appendChild(aiImg2);
 
         row.appendChild(container);
         row.appendChild(avatar);
@@ -565,6 +807,11 @@ document.addEventListener('DOMContentLoaded', () => {
         console.warn('recordBtn element not found in DOM');
     } else {
         recordBtn.addEventListener('click', () => {
+        // Guard: don't start recording when disabled (missing required API keys)
+        if (recordBtn.disabled) {
+            statusDisplay.textContent = 'Voice agent disabled: please configure required API keys.';
+            return;
+        }
         //console.log('Record button clicked. isRecording=', isRecording);
         audioContext.resume().catch(e => console.warn('audioContext.resume failed', e));
         if (isRecording) {
@@ -721,20 +968,39 @@ document.addEventListener('DOMContentLoaded', () => {
             updateUIRecording(true);
             
         } catch (error) {
-            console.error("Microphone access error:", error);
-            statusDisplay.textContent = "Microphone access denied.";
+            // Differentiate common errors for clearer user guidance
+            const msg = (error && error.name) ? error.name : (error && error.message) || String(error);
+            console.error('startRecording failed:', msg);
+            if (msg === 'NotAllowedError' || msg === 'PermissionDeniedError') {
+                statusDisplay.textContent = 'Microphone permission denied. Please allow microphone access.';
+            } else if (msg === 'NotFoundError' || msg === 'DevicesNotFoundError') {
+                statusDisplay.textContent = 'No microphone found. Please connect a microphone.';
+            } else {
+                statusDisplay.textContent = 'Could not start recording. Check console for details.';
+            }
             statusDisplay.classList.add('error');
+            // Ensure resources are cleaned up on failure
+            try { disconnectRecording(); } catch (_) {}
+            try { disconnectWebSocket(); } catch (_) {}
+            isRecording = false;
+            updateUIRecording(false);
         }
     }
 
             function stopRecording() {
-            if (isRecording) {
-                isRecording = false;
-                stopPulseEffect();
-                disconnectRecording();
-                disconnectWebSocket();
+            try {
+                if (isRecording) {
+                    isRecording = false;
+                    stopPulseEffect();
+                }
+                try { disconnectRecording(); } catch (_) {}
+                try { disconnectWebSocket(); } catch (_) {}
                 updateUIRecording(false);
                 statusDisplay.textContent = "Streaming stopped.";
+                // remove any lingering error class
+                statusDisplay.classList.remove('error');
+            } catch (e) {
+                console.warn('Error during stopRecording cleanup', e && e.message ? e.message : e);
             }
         }
 

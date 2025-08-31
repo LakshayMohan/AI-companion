@@ -31,6 +31,18 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # --- Load Secrets ---
 load_dotenv()
+# The server reads API keys from environment variables (typically set in a .env file during development).
+# The following environment variables are used by the voice agent and related features:
+#  - MURF_API_KEY        -> Murf TTS service (required for voice replies)
+#  - ASSEMBLYAI_API_KEY  -> AssemblyAI STT/streaming (required for speech-to-text)
+#  - GEMINI_API_KEY      -> Gemini / Google Generative AI (required for LLM responses)
+#  - OPENCAGE_API_KEY    -> OpenCage Geocoding (optional, used for weather lookups)
+#  - TRAVILY_API_KEY     -> Tavily search API (optional, used for web search)
+#  - CLIENT_ID / CLIENT_SECRET -> Spotify client credentials (optional)
+#
+# Note: the web UI also allows storing API keys locally in the browser (localStorage) for quick testing.
+# Server-side environment variables are required if you want the server to call these services
+# directly on startup; changes to the .env file require restarting the FastAPI process.
 MURF_API_KEY = os.getenv("MURF_API_KEY")
 ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -926,6 +938,51 @@ async def proxy_audio(url: str, request: Request = None):
     except Exception as e:
         logging.error(f"Audio proxy unexpected error: {e}")
         raise HTTPException(status_code=502, detail="Could not fetch audio.")
+
+
+@app.post('/config/keys')
+async def set_runtime_keys(payload: dict = Body(...)):
+    """Accept required API keys at runtime from a trusted UI client and update server globals.
+
+    Expected JSON: { "murf": "MURF_KEY", "assemblyai": "ASSEMBLYAI_KEY", "gemini": "GEMINI_KEY" }
+
+    This stores keys in process memory only (not persisted to disk). In production, prefer a secure server-side
+    configuration mechanism rather than accepting raw keys from clients.
+    """
+    try:
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail='Invalid payload')
+
+        murf = (payload.get('murf') or '').strip()
+        assembly = (payload.get('assemblyai') or payload.get('assembly') or '').strip()
+        gemini = (payload.get('gemini') or '').strip()
+
+        if not murf or not assembly or not gemini:
+            raise HTTPException(status_code=400, detail='Missing required keys')
+
+        # Update global variables in memory (do NOT log secret values)
+        global MURF_API_KEY, ASSEMBLYAI_API_KEY, GEMINI_API_KEY
+        MURF_API_KEY = murf
+        ASSEMBLYAI_API_KEY = assembly
+        GEMINI_API_KEY = gemini
+
+        # Reconfigure dependent libraries where possible
+        try:
+            aai.settings.api_key = ASSEMBLYAI_API_KEY
+        except Exception:
+            pass
+        try:
+            genai.configure(api_key=GEMINI_API_KEY)
+        except Exception:
+            pass
+
+        logging.info('Runtime API keys updated via /config/keys (values not logged).')
+        return JSONResponse({'ok': True})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f'Error updating runtime keys: {e}')
+        raise HTTPException(status_code=500, detail='Failed to update keys')
 
 
 @app.get("/agent/chat/history/{session_id}")

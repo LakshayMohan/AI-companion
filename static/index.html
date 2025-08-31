@@ -11,6 +11,11 @@
 <body>
     <div class="background-title">The Machine Mind</div>
     <button id="switchSessionBtn" class="switch-session top-right">New Session</button>
+    <!-- Config button to open settings for API keys -->
+    <button id="configBtn" class="config-button top-right" title="Settings" aria-controls="configSidebar" aria-expanded="false">
+        <span class="visually-hidden">Open Settings</span>
+        <span aria-hidden="true">Config ⚙️</span>
+    </button>
     <div class="agent-container">
         <div class="agent-header">
             <h1>AI Companion</h1>
@@ -35,9 +40,10 @@
         <div id="chat-container" class="chat-container">
             <!-- conversation bubbles will be appended here -->
         </div>
+    <!-- config sidebar removed from here and will be placed globally so it overlaps the main UI -->
     </div>
-    <script src="/static/script.js"></script>
-    <div id="confirmModal" class="confirm-modal top-right" style="display:none;">
+        <script src="/static/script.js"></script>
+        <div id="confirmModal" class="confirm-modal top-right" style="display:none;">
         <div class="confirm-box">
             <p>Start a new session? This will clear current chat history.</p>
             <div class="confirm-actions">
@@ -46,5 +52,46 @@
             </div>
         </div>
     </div>
+    <!-- Backdrop for modal (fades background when config is open) -->
+    <div id="backdrop" class="backdrop" aria-hidden="true" style="display:none;"></div>
+
+    <!-- Configuration overlay for API keys (global, centered and overlapping main UI) -->
+    <aside id="configSidebar" class="config-sidebar" aria-hidden="true">
+        <div class="config-inner">
+            <h3>Configure API Keys</h3>
+            <form id="configForm">
+                <label> MURF API Key 
+                    <input id="cfg_murf" type="password" placeholder="MURF_API_KEY">
+                </label>
+                <label> AssemblyAI API Key 
+                    <input id="cfg_assemblyai" type="password" placeholder="ASSEMBLYAI_API_KEY">
+                </label>
+                <label> Gemini API Key 
+                    <input id="cfg_gemini" type="password" placeholder="GEMINI_API_KEY">
+                </label>
+                <div class="hr-with-label">
+                    <span class="optional-label">Optional</span>
+                </div>
+                <label> OpenCage API Key 
+                    <input id="cfg_opencage" type="text" placeholder="OPENCAGE_API_KEY">
+                </label>
+                <label> Tavily API Key 
+                    <input id="cfg_tavily" type="text" placeholder="TRAVILY_API_KEY">
+                </label>
+                <label> Spotify Client ID 
+                    <input id="cfg_spotify_id" type="text" placeholder="CLIENT_ID">
+                </label>
+                <label> Spotify Client Secret 
+                    <input id="cfg_spotify_secret" type="password" placeholder="CLIENT_SECRET">
+                </label>
+                <div class="config-actions">
+                    <button id="saveConfig" type="button" class="test-button">Save</button>
+                    <button id="closeConfig" type="button" class="test-button">Close</button>
+                </div>
+            </form>
+        </div>
+    </aside>
+        <!-- Configuration sidebar for API keys (moved inside agent container so it scrolls with the page) -->
+        <!-- NOTE: This aside is injected into the DOM inside .agent-container so it moves with page scrolling -->
 </body>
 </html>
