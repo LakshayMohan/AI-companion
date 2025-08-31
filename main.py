@@ -1,4 +1,22 @@
-# app.py
+# main.py - AI Voice Companion Backend
+"""
+FastAPI server providing real-time voice interaction capabilities.
+
+This application combines:
+- Real-time audio transcription (AssemblyAI WebSocket streaming)
+- LLM conversation (Google Gemini with streaming responses)
+- Text-to-speech synthesis (Murf WebSocket API)
+- Optional services: weather data, web search (Tavily), Spotify playlist recommendations
+- Privacy-focused runtime API key management (no persistent storage)
+
+Key Features:
+- WebSocket-based audio streaming for low-latency transcription
+- Automatic web search augmentation for factual queries
+- Session-based chat history with configurable limits
+- Mood detection for music recommendations
+- Thread-safe direct event dispatching for faster UI updates
+"""
+
 import os
 import logging
 import json
@@ -28,7 +46,9 @@ import time as _time
 import re
 
 # --- Logging ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+_app_env = os.getenv("APP_ENV", "dev").lower()
+_log_level = logging.WARNING if _app_env in ("prod", "production") else logging.INFO
+logging.basicConfig(level=_log_level, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Load Secrets ---
 load_dotenv()  # retained for compatibility but keys are NOT pulled at startup anymore
@@ -87,9 +107,14 @@ MAX_HISTORY_LENGTH = history.MAX_HISTORY_LENGTH
 tts_cache: dict = {}
 
 async def get_spotify_token() -> str | None:
-    """Obtain and cache a Spotify client-credentials token.
-
-    Returns the Bearer token string or None on failure.
+    """Obtain and cache a Spotify client-credentials token for API access.
+    
+    Uses OAuth2 Client Credentials flow to authenticate with Spotify API.
+    Tokens are cached in memory until expiry (with 60s safety margin).
+    
+    Returns:
+        Bearer token string for API authorization, or None if credentials 
+        are missing or request fails.
     """
     global _spotify_token, _spotify_token_expires_at
     # return cached token if still valid (with 60s leeway)
@@ -131,7 +156,17 @@ async def get_spotify_token() -> str | None:
 
 
 def _normalize_mood(q: str) -> str:
-    """Small normalization for mood queries to improve Spotify search results."""
+    """Normalize mood query strings for improved Spotify search results.
+    
+    Maps common mood keywords to canonical search terms that work well
+    with Spotify's playlist search algorithm.
+    
+    Args:
+        q: Raw mood string from user input or mood detection
+        
+    Returns:
+        Normalized mood string optimized for Spotify search
+    """
     m = (q or "").strip().lower()
     mapping = {
         "happy": "happy",
@@ -148,13 +183,23 @@ def _normalize_mood(q: str) -> str:
 
 
 def _detect_mood_from_text(text: str) -> str:
-    """Mood detector using a configurable checks mapping.
-
-    The `checks` mapping contains for each canonical mood a list of allowed keywords
-    (synonyms, short stems, etc.). We return the normalized mood as soon as one of
-    the keywords is found in the user's text (whole-word or contained within a word).
-
-    Returns the normalized mood string or 'mood' when nothing matches.
+    """Extract mood indicators from user text using keyword matching.
+    
+    Analyzes user input for emotional keywords and returns the most specific
+    mood detected. Used to trigger relevant Spotify playlist recommendations.
+    
+    Algorithm:
+    1. Tokenize input text into words (handling hyphens)
+    2. Check for exact word matches first (higher precision)
+    3. Fall back to substring matching for word variants
+    4. Return first match found (priority order matters)
+    
+    Args:
+        text: User's spoken or typed input
+        
+    Returns:
+        Detected mood string ('happy', 'sad', 'chill', etc.) or 'mood' 
+        as generic fallback when no specific mood is found.
     """
     if not text:
         return "mood"
@@ -190,7 +235,19 @@ def _detect_mood_from_text(text: str) -> str:
 
 
 async def search_spotify_playlists(mood: str, limit: int = 3):
-    """Search Spotify for playlists matching the mood and return list of {name,url,id} dicts."""
+    """Search Spotify for playlists matching the given mood.
+    
+    Performs authenticated search using cached access token and returns
+    playlist metadata for frontend display.
+    
+    Args:
+        mood: Mood string to search for (will be normalized)
+        limit: Maximum number of playlists to return
+        
+    Returns:
+        List of playlist dictionaries with name, url, id fields,
+        or empty list if token unavailable or search fails.
+    """
     token = await get_spotify_token()
     if not token:
         return []
@@ -204,11 +261,18 @@ async def search_spotify_playlists(mood: str, limit: int = 3):
 
 @app.post("/weather")
 async def get_weather(payload: dict = Body(...)):
-    """Return current weather for a location.
-
-    Payload options:
-    - { "location": "New York, NY" }
-    - { "lat": 40.7, "lon": -74.0 }
+    """Retrieve current weather data for a specified location.
+    
+    Supports both coordinate-based and text-based location queries.
+    Uses OpenCage for geocoding and Open-Meteo for weather data.
+    
+    Request payload options:
+    - {"location": "New York, NY"} - Text location (requires OpenCage API key)
+    - {"lat": 40.7, "lon": -74.0} - Direct coordinates
+    
+    Returns:
+        JSON with location coordinates and current weather conditions,
+        or HTTP error if location not found or weather service unavailable.
     """
     lat = payload.get("lat")
     lon = payload.get("lon")
@@ -256,7 +320,18 @@ async def get_weather(payload: dict = Body(...)):
 
 @app.get('/search')
 async def web_search(q: str):
-    """Perform a simple web search. If TRAVILY_API_KEY is set, call Travily, otherwise use DuckDuckGo instant answer as a fallback."""
+    """Perform web search using Tavily API for real-time information.
+    
+    Provides access to current web content for fact-checking and research.
+    Only available when Tavily API key is configured at runtime.
+    
+    Args:
+        q: Search query string (URL parameter)
+        
+    Returns:
+        JSON with query and content fields, or HTTP 503 if Tavily unavailable.
+        Content is extracted from top search result or direct answer when available.
+    """
     if not q or q.strip() == '':
         raise HTTPException(status_code=400, detail='Missing query')
     q = q.strip()
@@ -306,17 +381,47 @@ async def web_search(q: str):
         self.murf_audio_chunks = defaultdict(list)
 
 class AudioStreamer:
+    """Manages real-time audio streaming and transcription sessions.
+    
+    Coordinates between:
+    - AssemblyAI Universal Streaming for real-time transcription
+    - WebSocket connections to frontend clients
+    - LLM response generation and TTS synthesis
+    - Session state and cleanup
+    
+    Key Features:
+    - Thread-safe direct event dispatch (no batching delays)
+    - Automatic LLM triggering on end-of-turn transcripts
+    - Per-session audio chunk storage for TTS assembly
+    - Graceful cleanup on disconnection
+    """
     def __init__(self):
-        # track active session state
+        # Track active session state and client connections
         self.active_sessions = {}
         self.streaming_clients = {}
         self.session_websockets = {}
-        self.pending_transcriptions = defaultdict(list)
+        self.pending_transcriptions = defaultdict(list)  # Deprecated: kept for compatibility
         self.final_transcripts = {}
         self.murf_audio_chunks = defaultdict(list)
 
     async def start_streaming(self, session_id: str, websocket=None):
-        """Start a new audio streaming session with AssemblyAI transcription (no recording)"""
+        """Initialize a new audio streaming session with AssemblyAI transcription.
+        
+        Sets up real-time transcription pipeline without local audio recording.
+        Configures event handlers for direct WebSocket message dispatch.
+        
+        Args:
+            session_id: Unique identifier for this streaming session
+            websocket: WebSocket connection to frontend client
+            
+        Returns:
+            Session ID on success, None if initialization fails
+            
+        Side Effects:
+            - Creates AssemblyAI streaming client with event handlers
+            - Caches event loop reference for thread-safe scheduling  
+            - Stores session state for cleanup management
+        """
         self.websocket = websocket
         
         # Store websocket reference for this session
@@ -340,40 +445,51 @@ class AudioStreamer:
                 )
                 
                 def on_begin(client_instance, event: BeginEvent):
+                    """Handle AssemblyAI session start event."""
                     logging.info(f"AssemblyAI session started: {event.id}")
                 
                 def on_turn(client_instance, event: TurnEvent):
-                    if event.transcript:
-                        logging.debug(f"Transcription: {event.transcript}")
-                        
-                        # Store transcription data for later sending
-                        if not hasattr(self, 'pending_transcriptions'):
-                            self.pending_transcriptions = {}
-                        if session_id not in self.pending_transcriptions:
-                            self.pending_transcriptions[session_id] = []
-                        
-                        message = {
-                            "type": "transcription",
-                            "transcript": event.transcript,
-                            "end_of_turn": event.end_of_turn,
-                            "turn_is_formatted": event.turn_is_formatted,
-                            "turn_order": event.turn_order
-                        }
-                        self.pending_transcriptions[session_id].append(message)
-                        logging.debug(f"Queued transcription for session {session_id}")
-                        
-                        # If this is the final formatted transcript, trigger LLM streaming
-                        if event.end_of_turn and event.turn_is_formatted:
-                            logging.debug("Triggering LLM streaming for final transcript")
-                            # Store the final transcript for LLM processing
-                            if not hasattr(self, 'final_transcripts'):
-                                self.final_transcripts = {}
-                            self.final_transcripts[session_id] = event.transcript
+                    """Process real-time transcription events with direct WebSocket dispatch.
+                    
+                    Key optimization: Events are sent immediately via thread-safe scheduling
+                    instead of batching, reducing UI update latency.
+                    
+                    Args:
+                        event: TurnEvent containing transcript, formatting flags, and metadata
+                    """
+                    if not event.transcript:
+                        return
+                    ws = self.session_websockets.get(session_id)
+                    payload = {
+                        "type": "transcription",
+                        "transcript": event.transcript,
+                        "end_of_turn": event.end_of_turn,
+                        "turn_is_formatted": event.turn_is_formatted,
+                        "turn_order": event.turn_order
+                    }
+                    try:
+                        loop = getattr(self, 'loop', None)
+                        if loop is None:
+                            try:
+                                loop = asyncio.get_running_loop()
+                                self.loop = loop
+                            except RuntimeError:
+                                loop = None
+                        if ws and loop:
+                            loop.call_soon_threadsafe(asyncio.create_task, ws.send_text(json.dumps(payload)))
+                    except Exception as ex:
+                        logging.debug(f"Failed scheduling transcription send: {ex}")
+                    if event.end_of_turn and event.turn_is_formatted:
+                        if not hasattr(self, 'final_transcripts'):
+                            self.final_transcripts = {}
+                        self.final_transcripts[session_id] = event.transcript
                 
                 def on_terminated(client_instance, event: TerminationEvent):
+                    """Handle AssemblyAI session termination."""
                     logging.info(f"AssemblyAI session terminated: {event.audio_duration_seconds} seconds")
                 
                 def on_error(client_instance, error: StreamingError):
+                    """Handle AssemblyAI streaming errors."""
                     logging.error(f"AssemblyAI error: {error}")
                 
                 client = StreamingClient(
@@ -388,6 +504,11 @@ class AudioStreamer:
                 client.on(StreamingEvents.Termination, on_terminated)
                 client.on(StreamingEvents.Error, on_error)
                 
+                # cache loop for callbacks
+                try:
+                    self.loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    self.loop = None
                 client.connect(
                     StreamingParameters(
                         sample_rate=16000,
@@ -413,7 +534,20 @@ class AudioStreamer:
 
     
     async def stream_audio_data(self, session_id: str, audio_data: bytes):
-        """Stream audio data to AssemblyAI for real-time transcription (no recording)"""
+        """Process incoming audio data and manage transcription/LLM pipeline.
+        
+        Handles the main audio processing workflow:
+        1. Forward raw PCM data to AssemblyAI for transcription
+        2. Check for completed transcripts and trigger LLM responses
+        3. Manage session state and error handling
+        
+        Args:
+            session_id: Session identifier for routing
+            audio_data: Raw PCM audio bytes from client
+            
+        Note: Transcription events are sent directly from AssemblyAI callbacks
+        for minimum latency. This method primarily handles LLM triggering.
+        """
         if session_id not in self.active_sessions:
             logging.warning(f"Received audio data for unknown session: {session_id}")
             return
@@ -425,35 +559,33 @@ class AudioStreamer:
                 self.streaming_clients[session_id].stream(audio_data)
             except Exception as e:
                 logging.error(f"Error streaming audio to AssemblyAI: {e}")
-        
-        # Send any pending transcriptions to the client
+        # Direct sending handled in callback; just fetch websocket ref
         session_websocket = self.session_websockets.get(session_id)
-        if session_websocket and hasattr(self, 'pending_transcriptions') and session_id in self.pending_transcriptions:
-            pending_messages = self.pending_transcriptions[session_id]
-            if pending_messages:
-                try:
-                    for message in pending_messages:
-                        await session_websocket.send_text(json.dumps(message))
-                    # Clear the pending messages after sending
-                    self.pending_transcriptions[session_id] = []
-                except Exception as e:
-                    logging.error(f"Error sending pending transcriptions to client: {e}")
-        
-        # Check if we have a final transcript to process with LLM
+
+        # Trigger LLM streaming if final transcript captured
         if hasattr(self, 'final_transcripts') and session_id in self.final_transcripts:
             final_transcript = self.final_transcripts[session_id]
             logging.debug("Processing final transcript with LLM")
-            
-            # Start LLM streaming in background
             asyncio.create_task(self.stream_llm_response(session_id, final_transcript, session_websocket))
-            
-            # Remove the processed transcript
             del self.final_transcripts[session_id]
-        
+
         logging.debug(f"Streamed {len(audio_data)} bytes to session {session_id}")
     
     async def stop_streaming(self, session_id: str):
-        """Stop streaming session (no recording)"""
+        """Clean shutdown of streaming session and associated resources.
+        
+        Performs comprehensive cleanup:
+        - Disconnects AssemblyAI streaming client
+        - Removes session from active tracking
+        - Cleans up WebSocket references and transcription caches
+        - Logs session duration for monitoring
+        
+        Args:
+            session_id: Session to terminate
+            
+        Returns:
+            Session ID if found and cleaned, None if session was unknown
+        """
         if session_id not in self.active_sessions:
             logging.warning(f"Attempted to stop unknown streaming session: {session_id}")
             return None
@@ -477,8 +609,7 @@ class AudioStreamer:
         del self.active_sessions[session_id]
         if hasattr(self, 'session_websockets') and session_id in self.session_websockets:
             del self.session_websockets[session_id]
-        if hasattr(self, 'pending_transcriptions') and session_id in self.pending_transcriptions:
-            del self.pending_transcriptions[session_id]
+    # pending_transcriptions deprecated (direct push now)
         if hasattr(self, 'final_transcripts') and session_id in self.final_transcripts:
             del self.final_transcripts[session_id]
         if session_id in self.murf_audio_chunks:
@@ -489,18 +620,45 @@ class AudioStreamer:
         return session_id
     
     async def stream_llm_response(self, session_id: str, user_text: str, websocket):
-        """Stream LLM response using Google's Gemini API"""
+        """Generate and stream LLM responses with integrated TTS and optional services.
+        
+        Orchestrates the complete response pipeline:
+        1. Intent detection (weather queries, factual questions)
+        2. Optional web search augmentation via Tavily
+        3. Streaming LLM generation with Google Gemini
+        4. Concurrent TTS synthesis via Murf WebSocket
+        5. Mood detection and Spotify playlist recommendations
+        
+        Key Features:
+        - Automatic web search context injection for factual queries
+        - Real-time streaming of both text and audio responses
+        - Background playlist recommendations based on detected mood
+        - Comprehensive error handling and fallback TTS
+        
+        Args:
+            session_id: Session context for history and state
+            user_text: Final transcribed user input
+            websocket: Client connection for response streaming
+        """
         try:
             if not GEMINI_API_KEY:
                 logging.error("Gemini API key not set")
                 return
             # Quick intent detection: handle weather queries directly. Web search now auto-augments factual queries.
             def is_weather_query(t: str) -> bool:
+                """Detect weather-related queries for direct handling."""
                 kws = ['weather', 'temperature', 'forecast']
                 lt = (t or '').lower()
                 return any(k in lt for k in kws)
-            # Lightweight heuristic for when to run a web search augmentation
+            
             def is_fact_query(t: str) -> bool:
+                """Heuristic detection of queries that benefit from web search augmentation.
+                
+                Triggers Tavily search for:
+                - Questions (containing '?')
+                - Queries starting with interrogative words
+                - Requests for current/latest information
+                """
                 if not t:
                     return False
                 lt = t.lower().strip()
@@ -510,6 +668,20 @@ class AudioStreamer:
                 return lt.startswith(starters)
 
             async def answer_weather(text: str):
+                """Provide current weather information for extracted or default location.
+                
+                Processing pipeline:
+                1. Extract location from user text using regex patterns
+                2. Geocode location to coordinates via OpenCage API
+                3. Fetch weather data from Open-Meteo API
+                4. Format response with temperature, wind, and conditions
+                
+                Args:
+                    text: User query containing potential location references
+                    
+                Returns:
+                    Formatted weather string or error message
+                """
                 # extract location if present ("in London")
                 import urllib.parse
                 loc = None
@@ -634,6 +806,18 @@ class AudioStreamer:
 
             # Murf WebSocket: open once per LLM response, reuse static context_id
             async def murf_streamer(text_stream_queue: asyncio.Queue):
+                """Handle real-time TTS synthesis via Murf WebSocket API.
+                
+                Manages concurrent text-to-speech conversion while LLM generates response:
+                1. Establishes WebSocket connection with voice configuration
+                2. Streams text chunks as they arrive from LLM
+                3. Receives and forwards audio chunks to client
+                4. Assembles final WAV file from all chunks
+                5. Handles connection errors and cleanup
+                
+                Args:
+                    text_stream_queue: Queue receiving text chunks from LLM generator
+                """
                 if not MURF_API_KEY:
                     logging.error("MURF_API_KEY not set, skipping TTS stream")
                     return
@@ -769,6 +953,14 @@ class AudioStreamer:
             murf_task = asyncio.create_task(murf_streamer(text_queue))
 
             def stream_sync():
+                """Synchronous LLM streaming function for thread execution.
+                
+                Handles Gemini API streaming in a separate thread to avoid blocking
+                the async event loop. Forwards text chunks to both WebSocket client
+                and Murf TTS queue for concurrent processing.
+                
+                Error handling includes graceful fallback and proper stream resolution.
+                """
                 try:
                     stream = model.generate_content(
                         augmented_text,
@@ -868,6 +1060,27 @@ audio_streamer = AudioStreamer()
 
 @app.websocket("/ws/audio/{session_id}")
 async def websocket_audio_endpoint(websocket: WebSocket, session_id: str):
+    """Main WebSocket endpoint for real-time audio streaming and transcription.
+    
+    Provides persistent connection for:
+    - Receiving raw PCM audio data from browser
+    - Sending real-time transcription events
+    - Streaming LLM responses and TTS audio
+    - Managing session lifecycle and cleanup
+    
+    Protocol:
+    - Client sends: Raw PCM audio bytes
+    - Server sends: JSON messages (transcription, llm_chunk, murf_audio_chunk, etc.)
+    
+    Args:
+        session_id: Unique session identifier for state management
+        
+    Connection Lifecycle:
+    1. Accept WebSocket connection
+    2. Initialize streaming session with AssemblyAI
+    3. Process incoming audio data continuously
+    4. Handle disconnection and cleanup gracefully
+    """
     await websocket.accept()
     logging.info(f"WebSocket connection established for session: {session_id}")
     
@@ -946,12 +1159,30 @@ async def proxy_audio(url: str, request: Request = None):
 
 @app.post('/config/keys')
 async def set_runtime_keys(payload: dict = Body(...)):
-    """Accept required API keys at runtime from a trusted UI client and update server globals.
-
-    Expected JSON: { "murf": "MURF_KEY", "assemblyai": "ASSEMBLYAI_KEY", "gemini": "GEMINI_KEY" }
-
-    This stores keys in process memory only (not persisted to disk). In production, prefer a secure server-side
-    configuration mechanism rather than accepting raw keys from clients.
+    """Configure API keys at runtime for secure, ephemeral operation.
+    
+    Security Model:
+    - Keys stored only in process memory (never persisted to disk)
+    - No secrets logged or exposed in responses
+    - Validates required keys before accepting configuration
+    - Reconfigures dependent SDK clients immediately
+    
+    Expected JSON payload:
+    {
+        "murf": "MURF_API_KEY",           // Required: TTS synthesis
+        "assemblyai": "ASSEMBLYAI_KEY",   // Required: Speech transcription  
+        "gemini": "GEMINI_API_KEY",       // Required: LLM responses
+        "opencage": "OPENCAGE_KEY",       // Optional: Geocoding for weather
+        "tavily": "TAVILY_API_KEY",       // Optional: Web search augmentation
+        "spotify_client_id": "CLIENT_ID", // Optional: Music recommendations
+        "spotify_client_secret": "SECRET" // Optional: Music recommendations
+    }
+    
+    Returns:
+        JSON with boolean flags indicating which keys were successfully set.
+        
+    Security Note:
+        In production, prefer server-side configuration over client key submission.
     """
     try:
         if not isinstance(payload, dict):

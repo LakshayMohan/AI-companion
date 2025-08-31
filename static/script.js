@@ -1,4 +1,26 @@
-// script.js
+// script.js - AI Voice Companion Frontend
+/**
+ * Real-time voice interaction client for the AI Companion application.
+ * 
+ * Core Functionality:
+ * - Real-time audio capture and streaming to backend
+ * - WebSocket communication for transcription and LLM responses
+ * - Audio playback with visualization effects
+ * - Session management and configuration UI
+ * - Privacy-focused API key handling (runtime-only, no persistence)
+ * 
+ * Architecture:
+ * - Modern Web Audio API with AudioWorklet for low-latency capture
+ * - WebSocket streaming for real-time bidirectional communication
+ * - Dynamic UI updates with chat bubbles and status indicators
+ * - Modal-based configuration with security-conscious key handling
+ * 
+ * Browser Compatibility:
+ * - Prefers AudioWorklet (modern browsers)
+ * - Falls back to MediaStreamTrackProcessor
+ * - Graceful degradation for older browsers
+ */
+
 document.addEventListener('DOMContentLoaded', () => {
     // --- UI Elements ---
     const recordBtn = document.getElementById('recordBtn');
@@ -40,7 +62,11 @@ document.addEventListener('DOMContentLoaded', () => {
     // searchTriggerNote removed; Tavily integration is now automatic
 
     // --- Security / input helpers ---
-    // Required credentials are treated as sensitive and kept in sessionStorage (less persistent than localStorage)
+    /**
+     * Secure credential storage with minimal persistence footprint.
+     * Required keys stored in sessionStorage (cleared on tab close).
+     * Optional keys stored in localStorage for convenience.
+     */
     function safeStoreCredential(id, value) {
         if (!id) return;
         const v = (value || '').trim();
@@ -52,6 +78,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function onCredentialInputChange(e) {
+        /**
+         * Handle real-time credential input changes.
+         * Updates record button state immediately as user types required keys.
+         */
         const id = e && e.target && e.target.id;
         if (!id) return;
         // Required keys kept in sessionStorage to reduce persistent footprint
@@ -449,6 +479,10 @@ document.addEventListener('DOMContentLoaded', () => {
     updateRecordButtonState();
 
     // --- WebSocket Audio Streaming ---
+    /**
+     * Establish WebSocket connection for real-time audio streaming.
+     * Handles bidirectional communication for transcription and responses.
+     */
     async function connectWebSocket() {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsUrl = `${protocol}//${window.location.host}/ws/audio/${sessionId}`;
@@ -581,6 +615,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ---------------- Chat UI helpers ----------------
+    /**
+     * Create and display user message bubble in chat interface.
+     */
     function appendUserBubble(text) {
         if (!chatContainer) return;
     const row = document.createElement('div');
@@ -601,6 +638,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     let currentAIBubble = null;
+    /**
+     * Start a new AI response bubble for streaming text display.
+     */
     function appendAIBubbleStart() {
         if (!chatContainer) return;
     const row = document.createElement('div');
@@ -622,6 +662,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function appendAIBubbleChunk(text) {
+        /**
+         * Append text to current AI response bubble for streaming display.
+         */
         if (!currentAIBubble) appendAIBubbleStart();
         // append text progressively
         currentAIBubble.textContent = (currentAIBubble.textContent || '') + text;
@@ -638,6 +681,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function appendPlaylistCards(playlists, mood) {
+        /**
+         * Display Spotify playlist recommendations as interactive cards.
+         * 
+         * Args:
+         *   playlists: Array of playlist objects {name, url, id, image}
+         *   mood: Detected mood string for display header
+         */
         if (!chatContainer) return;
         if (!playlists || playlists.length === 0) return;
 
@@ -901,6 +951,21 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function startRecording() {
+        /**
+         * Initialize audio capture and streaming pipeline.
+         * 
+         * Audio Processing Chain:
+         * 1. Request microphone access with optimal constraints
+         * 2. Create Web Audio API source and analysis nodes
+         * 3. Set up AudioWorklet or fallback processor for real-time PCM conversion
+         * 4. Establish WebSocket connection for streaming
+         * 5. Start visual feedback and UI state updates
+         * 
+         * Browser Compatibility:
+         * - AudioWorklet (preferred): Modern browsers, low latency
+         * - MediaStreamTrackProcessor: Fallback for AudioWorklet failures
+         * - Graceful error handling for permission and device issues
+         */
         try {
             disconnectPlayback(); // Ensure playback path is torn down
             disconnectRecording(); // Ensure previous recording path is gone
@@ -1023,6 +1088,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
             function stopRecording() {
+            /**
+             * Clean shutdown of audio capture and streaming.
+             * Ensures all resources are properly released and UI state is reset.
+             */
             try {
                 if (isRecording) {
                     isRecording = false;
@@ -1110,6 +1179,15 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function startPulseEffect(mode = 'recording') {
+        /**
+         * Visual audio feedback with real-time frequency analysis.
+         * 
+         * Creates animated circular visualization that responds to:
+         * - Microphone input during recording (mode='recording')
+         * - Audio playback during AI responses (mode='playback')
+         * 
+         * Uses Web Audio API frequency data for responsive visual feedback.
+         */
         audioVisualizer.style.display = 'block';
         const canvasCtx = audioVisualizer.getContext('2d');
         const analyser = mode === 'recording' ? micAnalyser : playbackAnalyser;
@@ -1209,6 +1287,17 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     function handleTranscription(data) {
+        /**
+         * Process real-time transcription events from AssemblyAI.
+         * 
+         * Handles progressive transcript updates with visual indicators:
+         * - Live transcription with pulsing indicator
+         * - Turn completion with checkmark
+         * - Formatted final transcripts for chat display
+         * 
+         * Args:
+         *   data: Transcription event {transcript, end_of_turn, turn_is_formatted, turn_order}
+         */
         const { transcript, end_of_turn, turn_is_formatted, turn_order } = data;
         
         if (transcript) {
@@ -1271,6 +1360,9 @@ document.addEventListener('DOMContentLoaded', () => {
     let llmFallbackTimer = null;
     
     function handleLLMStart(data) {
+        /**
+         * Initialize AI response display and reset state for new streaming response.
+         */
         currentLLMResponse = "";
         murfFinalReceived = false;
         base64AudioChunks = [];
@@ -1291,6 +1383,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     function handleLLMChunk(data) {
+    /**
+     * Process streaming text chunks from LLM response.
+     * Updates chat bubble progressively for real-time response display.
+     */
     // Ensure container visible even if start event was missed
     if (llmResponseContainer) llmResponseContainer.style.display = "block";
         if (data.text) {
@@ -1300,6 +1396,15 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     function handleLLMComplete(data) {
+        /**
+         * Finalize LLM response display and trigger completion effects.
+         * 
+         * Completion Pipeline:
+         * 1. Finalize chat bubble with complete response text
+         * 2. Trigger visual celebration effect (container spark animation)
+         * 3. Set up fallback audio playback if TTS chunks are available
+         * 4. Handle edge cases where Murf TTS doesn't complete
+         */
         // Ensure container visible even if start event was missed
         if (llmResponseContainer) llmResponseContainer.style.display = "block";
 
