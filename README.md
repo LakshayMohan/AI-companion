@@ -151,14 +151,14 @@ uvicorn main:app --reload
 ```
 
 ### 6.3 Access UI & Inject Keys
-Visit: http://localhost:8000
+Visit: [https://ai-companion-ihj1.onrender.com]
 
 1. Open the Config (gear) modal.
 2. Enter Murf, AssemblyAI, and Gemini keys (required). Save.
 3. (Optional) Enter weather/search/Spotify keys and save again.
 4. Press Record.
 
-Headless / programmatic injection example (PowerShell):
+Headless / programmatic injection example (PowerShell): when working on local machine
 ```powershell
 Invoke-RestMethod -Method Post -Uri http://localhost:8000/config/keys -Body (@{murf='YOUR_MURF';assemblyai='YOUR_AAI';gemini='YOUR_GEMINI'} | ConvertTo-Json) -ContentType 'application/json'
 ```
@@ -310,7 +310,7 @@ This project streams audio & interacts with third-party APIs. Ensure compliance 
 ```bash
 pip install -r requirements.txt
 uvicorn main:app --reload
-# Browser: http://localhost:8000 → Config → Enter keys → Save → Record
+# Browser: (https://ai-companion-ihj1.onrender.com) → Config → Enter keys → Save → Record
 ```
 
 ---
