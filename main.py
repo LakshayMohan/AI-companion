@@ -3,7 +3,7 @@ import os
 import logging
 import json
 import base64
-from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect, Body
+from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect, Body, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,6 +12,10 @@ import httpx
 import websockets
 import assemblyai as aai
 import google.generativeai as genai
+try:
+    from tavily import TavilyClient
+except Exception:
+    TavilyClient = None
 from collections import defaultdict
 import asyncio
 import secrets
@@ -32,6 +36,9 @@ ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 MURF_CONTEXT_ID = os.getenv("MURF_CONTEXT_ID", "murf_context_global_1")
 MURF_WS_URL = os.getenv("MURF_WS_URL", "wss://api.murf.ai/v1/speech/stream-input")
+OPENCAGE_API_KEY = os.getenv("OPENCAGE_API_KEY")
+# Support both env var spellings: TRAVILY_API_KEY (preferred) and TAVILY_API_KEY (common typo)
+TRAVILY_API_KEY = os.getenv("TRAVILY_API_KEY") or os.getenv("TAVILY_API_KEY")
 
 # --- Spotify credentials (for mood-based recommendations) ---
 SPOTIFY_CLIENT_ID = os.getenv("CLIENT_ID")
@@ -40,6 +47,9 @@ SPOTIFY_CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 # Token cache
 _spotify_token: str | None = None
 _spotify_token_expires_at: float = 0.0
+
+# In-memory mapping of temporary TTS identifiers to provider audio URLs (kept server-side)
+tts_cache: dict = {}
 
 async def get_spotify_token() -> str | None:
     """Obtain and cache a Spotify client-credentials token.
@@ -449,7 +459,143 @@ class AudioStreamer:
             if not GEMINI_API_KEY:
                 print("❌ Gemini API key not set")
                 return
-            
+            # Quick intent detection: handle weather and simple web-search queries directly
+            def is_weather_query(t: str) -> bool:
+                kws = ['weather', 'temperature', 'forecast']
+                lt = (t or '').lower()
+                return any(k in lt for k in kws)
+
+            def is_search_query(t: str) -> bool:
+                lt = (t or '').lower()
+                search_markers = ['who is', 'what is', 'search for', 'find', 'look up', 'tell me about']
+                return any(m in lt for m in search_markers)
+
+            async def answer_weather(text: str):
+                # extract location if present ("in London")
+                import urllib.parse
+                loc = None
+                m = re.search(r"in\s+([A-Za-z\s,]+)$", text.strip(), re.IGNORECASE)
+                if m:
+                    loc = m.group(1).strip()
+                # fallback: try to find 'in <place>' anywhere
+                if not loc:
+                    m2 = re.search(r"in\s+([A-Za-z\s,]+)", text, re.IGNORECASE)
+                    if m2:
+                        loc = m2.group(1).strip()
+                if not loc:
+                    loc = 'London'
+
+                # geocode via OpenCage
+                if not OPENCAGE_API_KEY:
+                    return f"I cannot look up live weather because geocoding is not configured."
+                try:
+                    geocode_url = 'https://api.opencagedata.com/geocode/v1/json'
+                    async with httpx.AsyncClient(timeout=8) as client:
+                        resp = await client.get(geocode_url, params={'q': loc, 'key': OPENCAGE_API_KEY, 'limit': 1})
+                        resp.raise_for_status()
+                        data = resp.json()
+                        results = data.get('results') or []
+                        if not results:
+                            return f"I couldn't find the location {loc}."
+                        geom = results[0].get('geometry') or {}
+                        lat = geom.get('lat')
+                        lon = geom.get('lng')
+                except Exception as e:
+                    logging.error(f"Geocode error: {e}")
+                    return "Geocoding failed."
+
+                # get weather from Open-Meteo
+                try:
+                    weather_url = 'https://api.open-meteo.com/v1/forecast'
+                    params = {'latitude': lat, 'longitude': lon, 'current_weather': True, 'timezone': 'auto'}
+                    async with httpx.AsyncClient(timeout=8) as client:
+                        resp = await client.get(weather_url, params=params)
+                        resp.raise_for_status()
+                        w = resp.json().get('current_weather') or {}
+                        if not w:
+                            return f"No weather data available for {loc}."
+                        temp = w.get('temperature')
+                        wind = w.get('windspeed')
+                        weather_code = w.get('weathercode')
+                        return f"Current weather in {loc}: {temp}°C, wind {wind} km/h, weather code {weather_code}."
+                except Exception as e:
+                    logging.error(f"Weather API error: {e}")
+                    return "Weather lookup failed."
+
+            async def answer_search(text: str):
+                # Use Tavily only for web search. If not configured, return a clear message.
+                if not (TRAVILY_API_KEY and TavilyClient is not None):
+                    return "Search is not available: TRAVILY_API_KEY is not configured or Tavily client is unavailable."
+
+                try:
+                    client = TavilyClient(api_key=TRAVILY_API_KEY)
+                    def call():
+                        return client.search(text)
+                    res = await asyncio.to_thread(call)
+
+                    # Normalize empty responses
+                    if not res:
+                        return f"No search results found for: {text}"
+
+                    # If result is a list (common Tavily response), return the top item's content
+                    if isinstance(res, list) and len(res) > 0:
+                        top = res[0]
+                        content = None
+                        if isinstance(top, dict):
+                            content = top.get('content') or top.get('title') or top.get('raw_content')
+                        if content:
+                            return str(content)
+                        # fallback to stringified top item
+                        return str(top)
+
+                    # If it's a dict-like single result, try common fields
+                    if isinstance(res, dict):
+                        for key in ("content", "answer", "summary", "results", "data", "items"):
+                            val = res.get(key)
+                            if val:
+                                # If it's a list, pick top
+                                if isinstance(val, list) and len(val) > 0:
+                                    first = val[0]
+                                    if isinstance(first, dict):
+                                        return str(first.get('content') or first.get('title') or first.get('raw_content') or first)
+                                    return str(first)
+                                return str(val)
+                        # fallback to JSON string
+                        import json as _json
+                        return _json.dumps(res)
+
+                    # Last resort: stringify
+                    return str(res)
+                except Exception as e:
+                    logging.error(f"Tavily search failed: {e}")
+                    return "Search failed: error calling Tavily."
+
+            # If user asked for weather or search, handle directly and return
+            if is_weather_query(user_text):
+                answer = await answer_weather(user_text)
+                # send to client as LLM streaming messages
+                try:
+                    await websocket.send_text(json.dumps({"type": "llm_start", "transcript": user_text}))
+                    await websocket.send_text(json.dumps({"type": "llm_chunk", "text": answer, "is_complete": True}))
+                    await websocket.send_text(json.dumps({"type": "llm_complete", "full_response": answer, "is_complete": True}))
+                    append_to_history(session_id, "user", user_text)
+                    append_to_history(session_id, "model", answer)
+                except Exception:
+                    pass
+                return
+
+            if is_search_query(user_text):
+                answer = await answer_search(user_text)
+                try:
+                    await websocket.send_text(json.dumps({"type": "llm_start", "transcript": user_text}))
+                    await websocket.send_text(json.dumps({"type": "llm_chunk", "text": answer, "is_complete": True}))
+                    await websocket.send_text(json.dumps({"type": "llm_complete", "full_response": answer, "is_complete": True}))
+                    append_to_history(session_id, "user", user_text)
+                    append_to_history(session_id, "model", answer)
+                except Exception:
+                    pass
+                return
+
             print(f"Starting LLM streaming for: {user_text}")
             
             # Add user message to chat history (trimmed)
@@ -747,19 +893,39 @@ async def favicon():
     return Response(content=png_bytes, media_type="image/png")
 
 @app.get("/proxy-audio/")
-async def proxy_audio(url: str):
-    async with httpx.AsyncClient() as client:
-        try:
-            r = await client.get(url)
-            r.raise_for_status()
-            return StreamingResponse(
-                iter([r.content]),
-                media_type="audio/mpeg",
-                headers={"Access-Control-Allow-Origin": "*"}
-            )
-        except httpx.RequestError as e:
-            logging.error(f"Audio proxy failed: {e.request.url} - {e}")
-            raise HTTPException(status_code=502, detail="Could not fetch audio.")
+async def proxy_audio(url: str, request: Request = None):
+    """Proxy an audio URL. If `url` is a relative path (starts with '/'), resolve it
+    against the current server base URL so internal endpoints like `/tts/fetch/{id}`
+    can be proxied.
+    """
+    # Resolve relative URLs to absolute using request.base_url when available
+    try:
+        if not url:
+            raise HTTPException(status_code=400, detail="Missing url parameter")
+
+        if url.startswith("/") and request is not None:
+            base = str(request.base_url).rstrip('/')
+            full_url = base + url
+        else:
+            full_url = url
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(full_url)
+            resp.raise_for_status()
+            content_type = resp.headers.get('content-type', 'application/octet-stream')
+            # Stream the response content back to the caller
+            return StreamingResponse(resp.aiter_bytes(), media_type=content_type, headers={"Access-Control-Allow-Origin": "*"})
+    except httpx.HTTPStatusError as e:
+        logging.error(f"Audio proxy HTTP error for {full_url}: {e.response.status_code}")
+        raise HTTPException(status_code=502, detail="Could not fetch audio (upstream HTTP error).")
+    except httpx.RequestError as e:
+        logging.error(f"Audio proxy failed: {getattr(e.request, 'url', 'unknown')} - {e}")
+        raise HTTPException(status_code=502, detail="Could not fetch audio (request error).")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Audio proxy unexpected error: {e}")
+        raise HTTPException(status_code=502, detail="Could not fetch audio.")
 
 
 @app.get("/agent/chat/history/{session_id}")
@@ -858,6 +1024,105 @@ async def get_playlist_tracks(playlist_id: str):
                     "image": image
                 })
             return {"playlist_id": playlist_id, "tracks": tracks}
+
+
+        @app.post("/weather")
+        async def get_weather(payload: dict = Body(...)):
+            """Return current weather for a location.
+
+            Payload options:
+            - { "location": "New York, NY" }
+            - { "lat": 40.7, "lon": -74.0 }
+            """
+            lat = payload.get("lat")
+            lon = payload.get("lon")
+            location = payload.get("location")
+
+            # If location string provided, geocode via OpenCage
+            if (not lat or not lon) and location:
+                if not OPENCAGE_API_KEY:
+                    raise HTTPException(status_code=500, detail="Geocoding not configured.")
+                try:
+                    geocode_url = "https://api.opencagedata.com/geocode/v1/json"
+                    async with httpx.AsyncClient(timeout=10) as client:
+                        resp = await client.get(geocode_url, params={"q": location, "key": OPENCAGE_API_KEY, "limit": 1})
+                        resp.raise_for_status()
+                        data = resp.json()
+                        results = data.get('results') or []
+                        if not results:
+                            raise HTTPException(status_code=404, detail="Location not found")
+                        geometry = results[0].get('geometry') or {}
+                        lat = geometry.get('lat')
+                        lon = geometry.get('lng')
+                except HTTPException:
+                    raise
+                except Exception as e:
+                    logging.error(f"OpenCage geocode error: {e}")
+                    raise HTTPException(status_code=502, detail="Geocoding service failed")
+
+            if not lat or not lon:
+                raise HTTPException(status_code=400, detail="Missing location coordinates or location string")
+
+            # Query Open-Meteo for current weather
+            try:
+                weather_url = "https://api.open-meteo.com/v1/forecast"
+                params = {"latitude": lat, "longitude": lon, "current_weather": True, "timezone": "auto"}
+                async with httpx.AsyncClient(timeout=10) as client:
+                    resp = await client.get(weather_url, params=params)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    current = data.get('current_weather') or {}
+                    return {"location": {"lat": lat, "lon": lon}, "current": current}
+            except Exception as e:
+                logging.error(f"Weather lookup failed: {e}")
+                raise HTTPException(status_code=502, detail="Weather lookup failed")
+
+
+        @app.get('/search')
+        async def web_search(q: str):
+            """Perform a simple web search. If TRAVILY_API_KEY is set, call Travily, otherwise use DuckDuckGo instant answer as a fallback."""
+            if not q or q.strip() == '':
+                raise HTTPException(status_code=400, detail='Missing query')
+            q = q.strip()
+            # Tavily-only search. If not configured, inform the caller.
+            if not (TRAVILY_API_KEY and TavilyClient is not None):
+                raise HTTPException(status_code=503, detail='Search service is not configured (missing TRAVILY_API_KEY)')
+
+            try:
+                client = TavilyClient(api_key=TRAVILY_API_KEY)
+                def call_search():
+                    return client.search(q)
+                res = await asyncio.to_thread(call_search)
+
+                if not res:
+                    return {"query": q, "content": "No results returned by Tavily"}
+
+                # Normalize to top content string when possible
+                if isinstance(res, list) and len(res) > 0:
+                    top = res[0]
+                    if isinstance(top, dict):
+                        content = top.get('content') or top.get('title') or top.get('raw_content')
+                        if content:
+                            return {"query": q, "content": content}
+                    return {"query": q, "content": str(top)}
+
+                if isinstance(res, dict):
+                    for key in ("content", "answer", "summary", "results", "data", "items"):
+                        val = res.get(key)
+                        if val:
+                            if isinstance(val, list) and len(val) > 0:
+                                first = val[0]
+                                if isinstance(first, dict):
+                                    return {"query": q, "content": str(first.get('content') or first.get('title') or first.get('raw_content') or first)}
+                                return {"query": q, "content": str(first)}
+                            return {"query": q, "content": str(val)}
+                    import json as _json
+                    return {"query": q, "content": _json.dumps(res)}
+
+                return {"query": q, "content": str(res)}
+            except Exception as e:
+                logging.error(f'Tavily search failed: {e}')
+                raise HTTPException(status_code=502, detail='Search failed: Tavily error')
     except HTTPException:
         raise
     except Exception as e:
@@ -913,13 +1178,40 @@ async def generate_tts(payload: dict = Body(...)):
             if not audio_url:
                 logging.error("Murf API succeeded but no audioFile.")
                 raise HTTPException(status_code=502, detail="TTS API error: no audio.")
-            return {"audio_url": audio_url}
+
+            # Store audio_url server-side and return an opaque tts_id so raw URLs are never exposed
+            tts_id = secrets.token_urlsafe(8)
+            tts_cache[tts_id] = audio_url
+            return {"tts_id": tts_id, "tts_available": True}
     except httpx.HTTPStatusError as e:
         logging.error(f"Murf TTS error: {e.response.status_code} - {e.response.text}")
         raise HTTPException(status_code=502, detail="Failed to communicate with TTS.")
     except Exception as e:
         logging.error(f"TTS error: {e}")
         raise HTTPException(status_code=500, detail="TTS internal error.")
+
+
+@app.get('/tts/fetch/{tts_id}')
+async def fetch_tts_audio(tts_id: str):
+    """Proxy endpoint to fetch generated TTS audio by opaque tts_id.
+
+    This keeps upstream audio URLs private. The server fetches the audio
+    from the TTS provider and streams bytes to the caller.
+    """
+    audio_url = tts_cache.get(tts_id)
+    if not audio_url:
+        raise HTTPException(status_code=404, detail='TTS id not found')
+
+    try:
+        # Stream the audio content from the provider and proxy it to the client
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.get(audio_url, timeout=60)
+            resp.raise_for_status()
+            content_type = resp.headers.get('content-type', 'application/octet-stream')
+            return Response(content=resp.content, media_type=content_type)
+    except Exception as e:
+        logging.error(f"Failed to fetch tts audio for id {tts_id}: {e}")
+        raise HTTPException(status_code=502, detail='Failed to fetch TTS audio')
 
 async def generate_fallback_audio(msg = "I'm sorry, I'm having trouble connecting right now. Please try again later."):
     if not MURF_API_KEY: return None
@@ -933,7 +1225,7 @@ async def generate_fallback_audio(msg = "I'm sorry, I'm having trouble connectin
             return murf_resp.json().get("audioFile")
     except Exception as e:
         logging.error(f"Fallback audio error: {e}")
-        return None
+    return None
 
 # --- Main Chat LLM endpoint ---
 @app.post("/agent/chat/{session_id}")
@@ -950,7 +1242,10 @@ async def agent_chat(session_id: str, file: UploadFile = File(...)):
         logging.error(f"Transcription error: {e}")
         fallback_audio_url = await generate_fallback_audio()
         if fallback_audio_url:
-            return JSONResponse(status_code=503, content={"error": "Could not process your audio.", "audio_url": fallback_audio_url})
+            # stash fallback audio and return tts_id so the raw URL isn't exposed
+            tts_id = secrets.token_urlsafe(8)
+            tts_cache[tts_id] = fallback_audio_url
+            return JSONResponse(status_code=503, content={"error": "Could not process your audio.", "tts_id": tts_id, "tts_available": True})
         return JSONResponse(status_code=503, content={"error": "Speech-to-text unavailable."})
 
     append_to_history(session_id, "user", user_text)
@@ -967,7 +1262,9 @@ async def agent_chat(session_id: str, file: UploadFile = File(...)):
         chat_history[session_id].pop()
         fallback_audio_url = await generate_fallback_audio("The AI model is currently unavailable.")
         if fallback_audio_url:
-            return JSONResponse(status_code=503, content={"error": "AI Model unavailable.", "audio_url": fallback_audio_url, "transcription": user_text})
+            tts_id = secrets.token_urlsafe(8)
+            tts_cache[tts_id] = fallback_audio_url
+            return JSONResponse(status_code=503, content={"error": "AI Model unavailable.", "tts_id": tts_id, "tts_available": True, "transcription": user_text})
         return JSONResponse(status_code=503, content={"error": "AI Model unavailable."})
 
     append_to_history(session_id, "model", llm_text)
@@ -990,10 +1287,13 @@ async def agent_chat(session_id: str, file: UploadFile = File(...)):
         async with httpx.AsyncClient(timeout=90) as client:
             murf_resp = await client.post("https://api.murf.ai/v1/speech/generate", headers=headers, json=payload)
             murf_resp.raise_for_status()
-            audio_url = murf_resp.json().get("audioFile")
-            if not audio_url: raise RuntimeError("Murf API no audio URL.")
+            # Do not log or expose the raw audio URL in server logs or responses
+            murf_json = murf_resp.json()
+            audio_url = murf_json.get("audioFile")
+            if not audio_url:
+                raise RuntimeError("Murf API no audio URL.")
     except Exception as e:
-        logging.error(f"TTS error: {e}")
+        logging.error(f"TTS error (audio generation failed)")
         return JSONResponse(
             status_code=503,
             content={
@@ -1003,9 +1303,9 @@ async def agent_chat(session_id: str, file: UploadFile = File(...)):
             }
         )
     resp_payload = {
-        "audio_url": audio_url,
+        "tts_available": True,
         "transcription": user_text,
-        "llm_response": llm_text
+    "llm_response": llm_text,
     }
     if playlists_for_response:
         resp_payload["playlists"] = playlists_for_response

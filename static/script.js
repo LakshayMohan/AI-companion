@@ -755,9 +755,14 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await response.json();
             if (!response.ok) throw data;
             updateTextOutputs(data.transcription, data.llm_response);
-            if (data.audio_url) {
+            if (data.tts_id) {
                 statusDisplay.textContent = "Response received!";
-                await playResponseAudio(data.audio_url);
+                // Fetch audio via server proxy to avoid exposing upstream URLs
+                await playResponseAudio(`/tts/fetch/${encodeURIComponent(data.tts_id)}`);
+            } else if (data.audio_url) {
+                // Backwards-compat: if server still returns audio_url, use it but do not log it
+                statusDisplay.textContent = "Response received!";
+                await playResponseAudio(`/proxy-audio/?url=${encodeURIComponent(data.audio_url)}`);
             } else {
                 throw new Error("Response received, but audio link is missing.");
             }
@@ -766,8 +771,10 @@ document.addEventListener('DOMContentLoaded', () => {
             statusDisplay.textContent = errorMessage;
             statusDisplay.classList.add('error');
             updateTextOutputs(error.transcription, error.llm_response);
-            if (error.audio_url) {
-                await playResponseAudio(error.audio_url, true);
+            if (error.tts_id) {
+                await playResponseAudio(`/tts/fetch/${encodeURIComponent(error.tts_id)}`, true);
+            } else if (error.audio_url) {
+                await playResponseAudio(`/proxy-audio/?url=${encodeURIComponent(error.audio_url)}`, true);
             }
         }
     }
@@ -1043,10 +1050,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ text: fullText })
                 }).then(r => r.json()).then(d => {
-                    if (d && d.audio_url) {
-                        // start playback via existing helper
+                    if (d && d.tts_id) {
                         responsePlaying = true;
-                        playResponseAudio(d.audio_url).finally(() => { responsePlaying = false; });
+                        playResponseAudio(`/tts/fetch/${encodeURIComponent(d.tts_id)}`).finally(() => { responsePlaying = false; });
+                    } else if (d && d.audio_url) {
+                        responsePlaying = true;
+                        playResponseAudio(`/proxy-audio/?url=${encodeURIComponent(d.audio_url)}`).finally(() => { responsePlaying = false; });
                     }
                 }).catch(err => {
                     console.error('Fallback TTS request failed', err);
