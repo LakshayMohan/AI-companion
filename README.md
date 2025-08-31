@@ -151,7 +151,7 @@ uvicorn main:app --reload
 ```
 
 ### 6.3 Access UI & Inject Keys
-Visit: [https://ai-companion-ihj1.onrender.com]
+Visit: [https://ai-companion-ihj1.onrender.com] or [http://127.0.0.1:8000/] (on local machine)
 
 1. Open the Config (gear) modal.
 2. Enter Murf, AssemblyAI, and Gemini keys (required). Save.
