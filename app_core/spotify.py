@@ -148,6 +148,10 @@ async def search_playlists(mood: str, limit: int = 3) -> List[Dict[str, Any]]:
                     "id": p.get("id"),
                     "image": image_url,
                 })
+            try:
+                logging.debug("Spotify playlist search success mood=%s count=%d names=%s", mood, len(out), [p.get('name') for p in out])
+            except Exception:
+                pass
             return out
     except httpx.HTTPStatusError as e:
         logging.error("Spotify playlist search HTTP error %s: %s", e.response.status_code, e.response.text[:300])
@@ -191,6 +195,10 @@ async def playlist_tracks(playlist_id: str) -> List[Dict[str, Any]]:
                     "external_url": (track.get("external_urls") or {}).get("spotify"),
                     "image": image,
                 })
+            try:
+                logging.debug("Spotify playlist tracks fetched playlist_id=%s count=%d first_titles=%s", playlist_id, len(tracks), [t.get('name') for t in tracks[:5]])
+            except Exception:
+                pass
             return tracks
     except httpx.HTTPStatusError as e:
         logging.error("Spotify playlist tracks HTTP error %s: %s", e.response.status_code, e.response.text[:300])
