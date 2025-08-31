@@ -1,5 +1,5 @@
 <div align="center">
-# AI Voice Companion
+<h1> AI Voice Companion </h1>
 </div>
 Comprehensive real‑time voice + AI companion with:
 
