@@ -12,7 +12,7 @@ import httpx
 import websockets
 import assemblyai as aai
 import google.generativeai as genai
-from app_core import config, history, spotify
+from app_core import config, history, spotify, search as core_search
 try:
     from tavily import TavilyClient
 except Exception:
@@ -31,19 +31,8 @@ import re
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # --- Load Secrets ---
-load_dotenv()
-# The server reads API keys from environment variables (typically set in a .env file during development).
-# The following environment variables are used by the voice agent and related features:
-#  - MURF_API_KEY        -> Murf TTS service (required for voice replies)
-#  - ASSEMBLYAI_API_KEY  -> AssemblyAI STT/streaming (required for speech-to-text)
-#  - GEMINI_API_KEY      -> Gemini / Google Generative AI (required for LLM responses)
-#  - OPENCAGE_API_KEY    -> OpenCage Geocoding (optional, used for weather lookups)
-#  - TRAVILY_API_KEY     -> Tavily search API (optional, used for web search)
-#  - CLIENT_ID / CLIENT_SECRET -> Spotify client credentials (optional)
-#
-# Note: the web UI also allows storing API keys locally in the browser (localStorage) for quick testing.
-# Server-side environment variables are required if you want the server to call these services
-# directly on startup; changes to the .env file require restarting the FastAPI process.
+load_dotenv()  # retained for compatibility but keys are NOT pulled at startup anymore
+# Runtime-only keys (start as None; populated via /config/keys). We alias local variables for speed/readability.
 MURF_API_KEY = config.MURF_API_KEY
 ASSEMBLYAI_API_KEY = config.ASSEMBLYAI_API_KEY
 GEMINI_API_KEY = config.GEMINI_API_KEY
@@ -57,6 +46,42 @@ SPOTIFY_CLIENT_SECRET = config.SPOTIFY_CLIENT_SECRET
 # Token cache
 _spotify_token: str | None = None
 _spotify_token_expires_at: float = 0.0
+
+# Configure dependent SDKs if keys are present (will be reconfigured when keys are set at runtime)
+if ASSEMBLYAI_API_KEY:
+    try:
+        aai.settings.api_key = ASSEMBLYAI_API_KEY
+    except Exception:
+        pass
+else:
+    logging.warning("ASSEMBLYAI_API_KEY not set.")
+
+if GEMINI_API_KEY:
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+    except Exception:
+        pass
+else:
+    logging.warning("GEMINI_API_KEY not set.")
+
+# FastAPI app and static assets
+app = FastAPI()
+
+# --- CORS ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Restrict in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# --- Session Chat Memory ---
+chat_history = history.chat_history
+append_to_history = history.append_to_history
+MAX_HISTORY_LENGTH = history.MAX_HISTORY_LENGTH
 
 # In-memory mapping of temporary TTS identifiers to provider audio URLs (kept server-side)
 tts_cache: dict = {}
@@ -171,108 +196,120 @@ async def search_spotify_playlists(mood: str, limit: int = 3):
         return []
     q = _normalize_mood(mood)
     search_url = "https://api.spotify.com/v1/search"
-    params = {"q": q, "type": "playlist", "limit": limit}
-    headers = {"Authorization": f"Bearer {token}"}
-    try:
-        async with httpx.AsyncClient(timeout=8) as client:
-            resp = await client.get(search_url, params=params, headers=headers)
-            text = resp.text
-            # Spotify may return an error payload even with non-200
-            try:
+    async with httpx.AsyncClient(timeout=8) as client:
+        resp = await client.get(search_url, params={"q": q, "type": "playlist", "limit": limit}, headers={"Authorization": f"Bearer {await get_spotify_token()}"})
+        # We don't need to parse here; the caller uses higher-level helpers.
+    
+
+
+@app.post("/weather")
+async def get_weather(payload: dict = Body(...)):
+    """Return current weather for a location.
+
+    Payload options:
+    - { "location": "New York, NY" }
+    - { "lat": 40.7, "lon": -74.0 }
+    """
+    lat = payload.get("lat")
+    lon = payload.get("lon")
+    location = payload.get("location")
+
+    # If location string provided, geocode via OpenCage
+    if (not lat or not lon) and location:
+        if not OPENCAGE_API_KEY:
+            raise HTTPException(status_code=500, detail="Geocoding not configured.")
+        try:
+            geocode_url = "https://api.opencagedata.com/geocode/v1/json"
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(geocode_url, params={"q": location, "key": OPENCAGE_API_KEY, "limit": 1})
                 resp.raise_for_status()
-            except Exception:
-                logging.error(f"Spotify search status error (status={resp.status_code}): {text}")
-                # try to parse body for error details
-                try:
-                    err = resp.json()
-                    logging.error("Spotify error body: %s", err)
-                except Exception:
-                    pass
-                return []
-
-            try:
                 data = resp.json()
-            except Exception:
-                logging.error(f"Spotify search returned non-JSON: {text}")
-                return []
+                results = data.get('results') or []
+                if not results:
+                    raise HTTPException(status_code=404, detail="Location not found")
+                geometry = results[0].get('geometry') or {}
+                lat = geometry.get('lat')
+                lon = geometry.get('lng')
+        except HTTPException:
+            raise
+        except Exception as e:
+            logging.error(f"OpenCage geocode error: {e}")
+            raise HTTPException(status_code=502, detail="Geocoding service failed")
 
-            # handle explicit error structure
-            if isinstance(data, dict) and data.get("error"):
-                logging.error("Spotify search returned error payload: %s", data.get("error"))
-                return []
+    if not lat or not lon:
+        raise HTTPException(status_code=400, detail="Missing location coordinates or location string")
 
-            if not isinstance(data, dict):
-                logging.error("Unexpected Spotify search response type: %s", type(data))
-                return []
-
-            playlists_block = data.get("playlists") or {}
-            if not isinstance(playlists_block, dict):
-                logging.error("Spotify playlists block missing or invalid: %s", playlists_block)
-                return []
-
-            items = playlists_block.get("items") or []
-            results = []
-            for p in items:
-                if not p or not isinstance(p, dict):
-                    continue
-                image_url = None
-                try:
-                    images = p.get("images") or []
-                    if images and isinstance(images, list):
-                        image_url = images[0].get("url") if images[0] else None
-                except Exception:
-                    image_url = None
-
-                results.append({
-                    "name": p.get("name"),
-                    "url": (p.get("external_urls") or {}).get("spotify"),
-                    "id": p.get("id"),
-                    "image": image_url
-                })
-            return results
+    # Query Open-Meteo for current weather
+    try:
+        weather_url = "https://api.open-meteo.com/v1/forecast"
+        params = {"latitude": lat, "longitude": lon, "current_weather": True, "timezone": "auto"}
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(weather_url, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+            current = data.get('current_weather') or {}
+            return {"location": {"lat": lat, "lon": lon}, "current": current}
     except Exception as e:
-        logging.error(f"Spotify search failed: {e}")
-        return []
-
-if ASSEMBLYAI_API_KEY:
-    aai.settings.api_key = ASSEMBLYAI_API_KEY
-else:
-    logging.warning("ASSEMBLYAI_API_KEY not set.")
-
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-else:
-    logging.warning("GEMINI_API_KEY not set.")
-
-app = FastAPI()
-
-# --- CORS ---
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Restrict in production
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
-# --- Session Chat Memory ---
-chat_history = defaultdict(list)
-MAX_HISTORY_LENGTH = 40  # max messages (user+model) to keep per session
-
-append_to_history = history.append_to_history
-chat_history = history.chat_history
-MAX_HISTORY_LENGTH = history.MAX_HISTORY_LENGTH
+        logging.error(f"Weather lookup failed: {e}")
+        raise HTTPException(status_code=502, detail="Weather lookup failed")
 
 
+@app.get('/search')
+async def web_search(q: str):
+    """Perform a simple web search. If TRAVILY_API_KEY is set, call Travily, otherwise use DuckDuckGo instant answer as a fallback."""
+    if not q or q.strip() == '':
+        raise HTTPException(status_code=400, detail='Missing query')
+    q = q.strip()
+    # Tavily-only search. If not configured, inform the caller.
+    if not (TRAVILY_API_KEY and TavilyClient is not None):
+        raise HTTPException(status_code=503, detail='Search service is not configured (missing TRAVILY_API_KEY)')
 
-# --- WebSocket Audio Streaming with AssemblyAI Universal Streaming (No Recording) ---
+    try:
+        client = TavilyClient(api_key=TRAVILY_API_KEY)
+        def call_search():
+            return client.search(q)
+        res = await asyncio.to_thread(call_search)
+
+        if not res:
+            return {"query": q, "content": "No results returned by Tavily"}
+
+        # Normalize to top content string when possible
+        if isinstance(res, list) and len(res) > 0:
+            top = res[0]
+            if isinstance(top, dict):
+                content = top.get('content') or top.get('title') or top.get('raw_content')
+                if content:
+                    return {"query": q, "content": content}
+            return {"query": q, "content": str(top)}
+
+        if isinstance(res, dict):
+            for key in ("content", "answer", "summary", "results", "data", "items"):
+                val = res.get(key)
+                if val:
+                    if isinstance(val, list) and len(val) > 0:
+                        first = val[0]
+                        if isinstance(first, dict):
+                            return {"query": q, "content": str(first.get('content') or first.get('title') or first.get('raw_content') or first)}
+                        return {"query": q, "content": str(first)}
+                    return {"query": q, "content": str(val)}
+            import json as _json
+            return {"query": q, "content": _json.dumps(res)}
+
+        return {"query": q, "content": str(res)}
+    except Exception as e:
+        logging.error(f'Tavily search failed: {e}')
+        raise HTTPException(status_code=502, detail='Search failed: Tavily error')
+        # Transient per-session storage
+        self.session_websockets = {}
+        self.pending_transcriptions = defaultdict(list)
+        self.final_transcripts = {}
+        self.murf_audio_chunks = defaultdict(list)
+
 class AudioStreamer:
     def __init__(self):
+        # track active session state
         self.active_sessions = {}
-        self.streaming_clients = {}  # Store AssemblyAI streaming clients per session
-        # Transient per-session storage
+        self.streaming_clients = {}
         self.session_websockets = {}
         self.pending_transcriptions = defaultdict(list)
         self.final_transcripts = {}
@@ -303,13 +340,11 @@ class AudioStreamer:
                 )
                 
                 def on_begin(client_instance, event: BeginEvent):
-                    print(f"AssemblyAI session started: {event.id}")
                     logging.info(f"AssemblyAI session started: {event.id}")
                 
                 def on_turn(client_instance, event: TurnEvent):
                     if event.transcript:
-                        print(f"TRANSCRIPTION: {event.transcript}")
-                        logging.info(f"Transcription: {event.transcript}")
+                        logging.debug(f"Transcription: {event.transcript}")
                         
                         # Store transcription data for later sending
                         if not hasattr(self, 'pending_transcriptions'):
@@ -325,22 +360,20 @@ class AudioStreamer:
                             "turn_order": event.turn_order
                         }
                         self.pending_transcriptions[session_id].append(message)
-                        print(f"Queued transcription for session {session_id}: {event.transcript}")
+                        logging.debug(f"Queued transcription for session {session_id}")
                         
                         # If this is the final formatted transcript, trigger LLM streaming
                         if event.end_of_turn and event.turn_is_formatted:
-                            print(f"Triggering LLM streaming for final transcript: {event.transcript}")
+                            logging.debug("Triggering LLM streaming for final transcript")
                             # Store the final transcript for LLM processing
                             if not hasattr(self, 'final_transcripts'):
                                 self.final_transcripts = {}
                             self.final_transcripts[session_id] = event.transcript
                 
                 def on_terminated(client_instance, event: TerminationEvent):
-                    print(f"AssemblyAI session terminated: {event.audio_duration_seconds} seconds processed")
                     logging.info(f"AssemblyAI session terminated: {event.audio_duration_seconds} seconds")
                 
                 def on_error(client_instance, error: StreamingError):
-                    print(f"TRANSCRIPTION ERROR: {error}")
                     logging.error(f"AssemblyAI error: {error}")
                 
                 client = StreamingClient(
@@ -401,7 +434,6 @@ class AudioStreamer:
                 try:
                     for message in pending_messages:
                         await session_websocket.send_text(json.dumps(message))
-                        print(f"Sent transcription to client: {message['transcript']}")
                     # Clear the pending messages after sending
                     self.pending_transcriptions[session_id] = []
                 except Exception as e:
@@ -410,7 +442,7 @@ class AudioStreamer:
         # Check if we have a final transcript to process with LLM
         if hasattr(self, 'final_transcripts') and session_id in self.final_transcripts:
             final_transcript = self.final_transcripts[session_id]
-            print(f"Processing final transcript with LLM: {final_transcript}")
+            logging.debug("Processing final transcript with LLM")
             
             # Start LLM streaming in background
             asyncio.create_task(self.stream_llm_response(session_id, final_transcript, session_websocket))
@@ -432,7 +464,7 @@ class AudioStreamer:
         if session_id in self.streaming_clients and self.streaming_clients[session_id]:
             try:
                 self.streaming_clients[session_id].disconnect(terminate=True)
-                print("AssemblyAI Universal Streaming client disconnected")
+                logging.debug("AssemblyAI Universal Streaming client disconnected")
             except Exception as e:
                 logging.error(f"Error disconnecting AssemblyAI Universal Streaming client: {e}")
             finally:
@@ -460,18 +492,22 @@ class AudioStreamer:
         """Stream LLM response using Google's Gemini API"""
         try:
             if not GEMINI_API_KEY:
-                print("❌ Gemini API key not set")
+                logging.error("Gemini API key not set")
                 return
-            # Quick intent detection: handle weather and simple web-search queries directly
+            # Quick intent detection: handle weather queries directly. Web search now auto-augments factual queries.
             def is_weather_query(t: str) -> bool:
                 kws = ['weather', 'temperature', 'forecast']
                 lt = (t or '').lower()
                 return any(k in lt for k in kws)
-
-            def is_search_query(t: str) -> bool:
-                lt = (t or '').lower()
-                # Only trigger Tavily when the explicit phrase is used
-                return ('search the web' in lt) or ('serach the web' in lt)  # includes common misspelling
+            # Lightweight heuristic for when to run a web search augmentation
+            def is_fact_query(t: str) -> bool:
+                if not t:
+                    return False
+                lt = t.lower().strip()
+                if '?' in lt:
+                    return True
+                starters = ('who ', 'what ', 'when ', 'where ', 'why ', 'how ', 'latest ', 'current ', 'news ', 'tell me')
+                return lt.startswith(starters)
 
             async def answer_weather(text: str):
                 # extract location if present ("in London")
@@ -489,12 +525,12 @@ class AudioStreamer:
                     loc = 'London'
 
                 # geocode via OpenCage
-                if not OPENCAGE_API_KEY:
-                    return f"I cannot look up live weather because geocoding is not configured."
+                if not config.OPENCAGE_API_KEY:
+                    return "I cannot look up live weather because geocoding is not configured."
                 try:
                     geocode_url = 'https://api.opencagedata.com/geocode/v1/json'
                     async with httpx.AsyncClient(timeout=8) as client:
-                        resp = await client.get(geocode_url, params={'q': loc, 'key': OPENCAGE_API_KEY, 'limit': 1})
+                        resp = await client.get(geocode_url, params={'q': loc, 'key': config.OPENCAGE_API_KEY, 'limit': 1})
                         resp.raise_for_status()
                         data = resp.json()
                         results = data.get('results') or []
@@ -526,52 +562,24 @@ class AudioStreamer:
                     return "Weather lookup failed."
 
             async def answer_search(text: str):
-                # Use Tavily only for web search. If not configured, return a clear message.
-                if not (TRAVILY_API_KEY and TavilyClient is not None):
-                    return "Search is not available: TRAVILY_API_KEY is not configured or Tavily client is unavailable."
-
+                if not TRAVILY_API_KEY:
+                    return "Search unavailable: Tavily key not configured."
+                # Prefer centralized helper; if it fails we fall back to direct client (optional)
+                result = await core_search.tavily_search(text)
+                if result:
+                    return result
+                # Fallback attempt using Tavily client library if installed
+                if TavilyClient is None:
+                    return "Search failed (client library unavailable)."
                 try:
                     client = TavilyClient(api_key=TRAVILY_API_KEY)
-                    def call():
-                        return client.search(text)
-                    res = await asyncio.to_thread(call)
-
-                    # Normalize empty responses
-                    if not res:
-                        return f"No search results found for: {text}"
-
-                    # If result is a list (common Tavily response), return the top item's content
-                    if isinstance(res, list) and len(res) > 0:
-                        top = res[0]
-                        content = None
-                        if isinstance(top, dict):
-                            content = top.get('content') or top.get('title') or top.get('raw_content')
-                        if content:
-                            return str(content)
-                        # fallback to stringified top item
-                        return str(top)
-
-                    # If it's a dict-like single result, try common fields
-                    if isinstance(res, dict):
-                        for key in ("content", "answer", "summary", "results", "data", "items"):
-                            val = res.get(key)
-                            if val:
-                                # If it's a list, pick top
-                                if isinstance(val, list) and len(val) > 0:
-                                    first = val[0]
-                                    if isinstance(first, dict):
-                                        return str(first.get('content') or first.get('title') or first.get('raw_content') or first)
-                                    return str(first)
-                                return str(val)
-                        # fallback to JSON string
-                        import json as _json
-                        return _json.dumps(res)
-
-                    # Last resort: stringify
-                    return str(res)
+                    raw = await asyncio.to_thread(lambda: client.search(text))
+                    if not raw:
+                        return f"No search results for: {text}"
+                    return str(raw)[:1200]
                 except Exception as e:
-                    logging.error(f"Tavily search failed: {e}")
-                    return "Search failed: error calling Tavily."
+                    logging.error(f"Tavily fallback search error: {e}")
+                    return "Search failed due to an internal error."
 
             # If user asked for weather or search, handle directly and return
             if is_weather_query(user_text):
@@ -587,28 +595,28 @@ class AudioStreamer:
                     pass
                 return
 
-            if is_search_query(user_text):
-                # If Tavily is configured, use it for quick web answers.
-                # If Tavily is NOT configured, fall back to the normal Gemini LLM flow
-                # so the LLM can answer the query from its own knowledge.
-                if TRAVILY_API_KEY and TavilyClient is not None:
-                    answer = await answer_search(user_text)
-                    try:
-                        await websocket.send_text(json.dumps({"type": "llm_start", "transcript": user_text}))
-                        await websocket.send_text(json.dumps({"type": "llm_chunk", "text": answer, "is_complete": True}))
-                        await websocket.send_text(json.dumps({"type": "llm_complete", "full_response": answer, "is_complete": True}))
-                        append_to_history(session_id, "user", user_text)
-                        append_to_history(session_id, "model", answer)
-                    except Exception:
-                        pass
-                    return
-                # else: no Tavily configured -> continue to LLM streaming (do not short-circuit)
+            # Optional web search augmentation (prepend brief results to model context)
+            search_snippet = None
+            if TRAVILY_API_KEY and is_fact_query(user_text):
+                try:
+                    search_snippet = await core_search.tavily_search(user_text)
+                except Exception as ex:
+                    logging.debug(f"Tavily augmentation failed: {ex}")
 
-            print(f"Starting LLM streaming for: {user_text}")
+            logging.debug("Starting LLM streaming")
             
             # Add user message to chat history (trimmed)
             append_to_history(session_id, "user", user_text)
             
+            # Build augmented prompt if we have search context
+            augmented_text = user_text
+            if search_snippet:
+                augmented_text = (
+                    "Using the following recent web search context, answer the user's query accurately. "
+                    "If the context seems unrelated, rely on general knowledge.\n\n"
+                    f"[Web Search Context]\n{search_snippet}\n\n[User Question]\n{user_text}"
+                )
+
             # Initialize Gemini model
             model = genai.GenerativeModel('gemini-1.5-flash')
             
@@ -618,7 +626,7 @@ class AudioStreamer:
                 "transcript": user_text
             }
             await websocket.send_text(json.dumps(start_message))
-            print(f"Sent LLM start message to client")
+            logging.debug("Sent LLM start message to client")
             
             # Stream response using synchronous generator in a background thread
             loop = asyncio.get_running_loop()
@@ -627,7 +635,7 @@ class AudioStreamer:
             # Murf WebSocket: open once per LLM response, reuse static context_id
             async def murf_streamer(text_stream_queue: asyncio.Queue):
                 if not MURF_API_KEY:
-                    print("❌ MURF_API_KEY not set, skipping TTS stream")
+                    logging.error("MURF_API_KEY not set, skipping TTS stream")
                     return
                 uri = f"{MURF_WS_URL}?api-key={MURF_API_KEY}&sample_rate=44100&channel_type=MONO&format=WAV"
                 try:
@@ -671,7 +679,7 @@ class AudioStreamer:
                                             except Exception:
                                                 pass
                                     if data.get("final"):
-                                        print("Murf synthesis complete")
+                                        logging.debug("Murf synthesis complete")
                                         # Attempt to assemble the collected chunks into a single WAV
                                         final_b64 = None
                                         try:
@@ -725,7 +733,7 @@ class AudioStreamer:
                                             pass
                                         break
                             except Exception as ex:
-                                print(f"❌ Murf receiver error: {ex}")
+                                logging.error(f"Murf receiver error: {ex}")
 
                         recv_task = asyncio.create_task(receiver())
 
@@ -754,7 +762,7 @@ class AudioStreamer:
                         except asyncio.TimeoutError:
                             recv_task.cancel()
                 except Exception as ex:
-                    print(f"❌ Murf websocket error: {ex}")
+                    logging.error(f"Murf websocket error: {ex}")
 
             # Queue to bridge LLM text chunks to Murf
             text_queue: asyncio.Queue[str | None] = asyncio.Queue()
@@ -763,7 +771,7 @@ class AudioStreamer:
             def stream_sync():
                 try:
                     stream = model.generate_content(
-                        user_text,
+                        augmented_text,
                         stream=True,
                         generation_config=genai.types.GenerationConfig(
                             temperature=0.7,
@@ -787,7 +795,7 @@ class AudioStreamer:
                             loop.call_soon_threadsafe(asyncio.create_task, websocket.send_text(msg))
                             # Also forward chunk to Murf
                             loop.call_soon_threadsafe(asyncio.create_task, text_queue.put(text_chunk))
-                            print(f"Sent LLM chunk: {text_chunk}")
+                            # chunk logging suppressed for speed
                     # Ensure the stream is fully resolved (no-ops for SDKs that buffer)
                     try:
                         stream.resolve()
@@ -802,7 +810,7 @@ class AudioStreamer:
                     loop.call_soon_threadsafe(asyncio.create_task, websocket.send_text(complete_msg))
                     # Close Murf queue
                     loop.call_soon_threadsafe(asyncio.create_task, text_queue.put(None))
-                    print(f"LLM streaming completed: {full_response_ref['text']}")
+                    logging.debug("LLM streaming completed")
                 except Exception as ex:
                     err_msg = json.dumps({
                         "type": "llm_error",
@@ -819,30 +827,30 @@ class AudioStreamer:
                 murf_task.cancel()
 
             # Add AI response to chat history after finishing (trimmed)
-                if full_response_ref["text"]:
-                    append_to_history(session_id, "model", full_response_ref["text"])
-                    # Detect mood and fetch playlist recommendations only when a concrete mood was found
-                    try:
-                        # Use the user's original transcript to decide whether to recommend music
-                        detected_mood = spotify.detect_mood_from_text(user_text)
-                        # _detect_mood_from_text returns 'mood' as a generic fallback; skip recommendations in that case
-                        if detected_mood and detected_mood != 'mood':
-                            playlists = await search_spotify_playlists(detected_mood, limit=3)
-                            if playlists:
-                                # Send playlist recommendations to client over websocket
-                                try:
-                                    await websocket.send_text(json.dumps({
-                                        "type": "playlist_recommendations",
-                                        "mood": detected_mood,
-                                        "playlists": playlists
-                                    }))
-                                except Exception:
-                                    pass
-                    except Exception as ex:
-                        logging.debug(f"Playlist recommendation failed: {ex}")
+            if full_response_ref["text"]:
+                append_to_history(session_id, "model", full_response_ref["text"])
+                # Detect mood and fetch playlist recommendations only when a concrete mood was found
+                try:
+                    # Use the user's original transcript to decide whether to recommend music
+                    detected_mood = spotify.detect_mood_from_text(user_text)
+                    # spotify.detect_mood_from_text returns 'mood' as a generic fallback; skip recommendations in that case
+                    if detected_mood and detected_mood != 'mood':
+                        logging.info(f"Detected mood '{detected_mood}' from user_text, attempting playlist search")
+                        # Use the app_core.spotify helper which handles token fetch and search
+                        playlists = await spotify.search_playlists(detected_mood, limit=3)
+                        logging.info(f"Playlist lookup for mood '{detected_mood}' returned {len(playlists) if playlists else 0} results")
+                        if playlists and len(playlists) > 0:
+                            # Send playlist recommendations to client over websocket
+                            try:
+                                payload = {"type": "playlist_recommendations", "mood": detected_mood, "playlists": playlists}
+                                await websocket.send_text(json.dumps(payload))
+                                logging.info(f"Sent playlist_recommendations for mood '{detected_mood}' to session {session_id}")
+                            except Exception as ex:
+                                logging.error(f"Failed to send playlist_recommendations over websocket: {ex}")
+                except Exception as ex:
+                    logging.debug(f"Playlist recommendation failed: {ex}")
             
         except Exception as e:
-            print(f"❌ Error in LLM streaming: {e}")
             logging.error(f"LLM streaming error: {e}")
             
             # Send error message to client
@@ -952,16 +960,34 @@ async def set_runtime_keys(payload: dict = Body(...)):
         murf = (payload.get('murf') or '').strip()
         assembly = (payload.get('assemblyai') or payload.get('assembly') or '').strip()
         gemini = (payload.get('gemini') or '').strip()
+        opencage = (payload.get('opencage') or '').strip()
+        tavily = (payload.get('tavily') or payload.get('travily') or '').strip()
+        spotify_id = (payload.get('spotify_client_id') or payload.get('spotify_id') or '').strip()
+        spotify_secret = (payload.get('spotify_client_secret') or payload.get('spotify_secret') or '').strip()
 
         if not murf or not assembly or not gemini:
             raise HTTPException(status_code=400, detail='Missing required keys')
 
-        # Update global variables in memory (do NOT log secret values)
+        # Update required keys
         config.update_runtime_keys(murf, assembly, gemini)
-        global MURF_API_KEY, ASSEMBLYAI_API_KEY, GEMINI_API_KEY
+        # Update optional keys directly on config module
+        if opencage:
+            config.OPENCAGE_API_KEY = opencage
+        if tavily:
+            config.TRAVILY_API_KEY = tavily
+        if spotify_id:
+            config.SPOTIFY_CLIENT_ID = spotify_id
+        if spotify_secret:
+            config.SPOTIFY_CLIENT_SECRET = spotify_secret
+
+        global MURF_API_KEY, ASSEMBLYAI_API_KEY, GEMINI_API_KEY, OPENCAGE_API_KEY, TRAVILY_API_KEY, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET
         MURF_API_KEY = config.MURF_API_KEY
         ASSEMBLYAI_API_KEY = config.ASSEMBLYAI_API_KEY
         GEMINI_API_KEY = config.GEMINI_API_KEY
+        OPENCAGE_API_KEY = config.OPENCAGE_API_KEY
+        TRAVILY_API_KEY = config.TRAVILY_API_KEY
+        SPOTIFY_CLIENT_ID = config.SPOTIFY_CLIENT_ID
+        SPOTIFY_CLIENT_SECRET = config.SPOTIFY_CLIENT_SECRET
 
         # Reconfigure dependent libraries where possible
         try:
@@ -974,7 +1000,17 @@ async def set_runtime_keys(payload: dict = Body(...)):
             pass
 
         logging.info('Runtime API keys updated via /config/keys (values not logged).')
-        return JSONResponse({'ok': True})
+        logging.info('Key presence -> murf:%s assembly:%s gemini:%s opencage:%s tavily:%s spotify_id:%s spotify_secret:%s',
+                     bool(MURF_API_KEY), bool(ASSEMBLYAI_API_KEY), bool(GEMINI_API_KEY), bool(OPENCAGE_API_KEY), bool(TRAVILY_API_KEY), bool(SPOTIFY_CLIENT_ID), bool(SPOTIFY_CLIENT_SECRET))
+        return JSONResponse({'ok': True, 'keys': {
+            'murf': bool(MURF_API_KEY),
+            'assemblyai': bool(ASSEMBLYAI_API_KEY),
+            'gemini': bool(GEMINI_API_KEY),
+            'opencage': bool(OPENCAGE_API_KEY),
+            'tavily': bool(TRAVILY_API_KEY),
+            'spotify_client_id': bool(SPOTIFY_CLIENT_ID),
+            'spotify_client_secret': bool(SPOTIFY_CLIENT_SECRET)
+        }})
     except HTTPException:
         raise
     except Exception as e:
@@ -1203,6 +1239,32 @@ async def switch_session(payload: dict):
 
     new_id = f"session_{int(time.time() * 1000)}_{secrets.token_hex(4)}"
     chat_history[new_id] = []
+    # Also clear all runtime API keys so each session requires fresh entry
+    try:
+        config.MURF_API_KEY = None
+        config.ASSEMBLYAI_API_KEY = None
+        config.GEMINI_API_KEY = None
+        config.OPENCAGE_API_KEY = None
+        config.TRAVILY_API_KEY = None
+        config.SPOTIFY_CLIENT_ID = None
+        config.SPOTIFY_CLIENT_SECRET = None
+        global MURF_API_KEY, ASSEMBLYAI_API_KEY, GEMINI_API_KEY, OPENCAGE_API_KEY, TRAVILY_API_KEY, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET
+        MURF_API_KEY = None
+        ASSEMBLYAI_API_KEY = None
+        GEMINI_API_KEY = None
+        OPENCAGE_API_KEY = None
+        TRAVILY_API_KEY = None
+        SPOTIFY_CLIENT_ID = None
+        SPOTIFY_CLIENT_SECRET = None
+        # Best-effort: reset external SDK configs (some SDKs may not support un-setting keys, so ignore errors)
+        try:
+            aai.settings.api_key = None
+        except Exception:
+            pass
+        # Gemini SDK has no direct de-configure; leaving as-is without key won't work until reconfigured.
+        logging.info('Cleared all runtime API keys on session switch.')
+    except Exception as e:
+        logging.warning(f'Failed clearing runtime keys on session switch: {e}')
     return {"session_id": new_id}
 
 # --- TTS Endpoint ---

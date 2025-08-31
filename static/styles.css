@@ -33,7 +33,7 @@ body {
     border-radius: 25px;
     padding: 40px 50px;
     width: 100%;
-    max-width: 550px;
+    max-width: 850px;
     box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 6px 30px rgba(196,75,214,0.06);
     display: flex;
     flex-direction: column;
@@ -418,13 +418,11 @@ h4 {
 
 /* Config button in header */
 .config-button {
-    /* Match the visual language of the New Session button so the two look cohesive */
+    /* Stacked below the New Session button (same right edge, vertical gap) */
     position: fixed;
-    top: 18px;
-    /* place near the New Session button by default; we'll nudge it via the top-right helper class */
-    
+    top: 70px; /* ~ New Session top (18px) + button height (40px) + small gap */
+    right: 18px;
     transform: none;
-    right: 180px; /* place config button to the left of New Session */
     z-index: 60;
     background: rgba(0,0,0,0.3);
     color: #fff;
@@ -434,12 +432,12 @@ h4 {
     font-size: 16px;
     cursor: pointer;
     box-shadow: 0 6px 24px rgba(0,0,0,0.6);
-    transition: transform 160ms ease, background 160ms ease, right 160ms ease;
+    transition: transform 160ms ease, background 160ms ease;
     display: inline-flex;
     align-items: center;
     gap: 8px;
     min-height: 40px;
-    min-width: 120px; /* decreased width as requested */
+    min-width: 120px;
     justify-content: center;
 }
 .config-button:hover { transform: translateY(-2px); background: rgba(0,0,0,0.4); }
@@ -582,7 +580,8 @@ h4 {
 @media (min-width: 641px) and (max-width: 980px) {
     /* Medium screens: nudge the buttons closer so they remain visible without overlapping */
     .switch-session.top-right { right: 18px; }
-    .config-button { right: 106px; }
+    /* Keep stacked layout on medium screens */
+    .config-button { right: 18px; top: 70px; }
     /* Ensure both buttons visually match size */
     .switch-session.top-right, .config-button { min-width: 120px; min-height: 40px; }
 }

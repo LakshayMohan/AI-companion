@@ -37,7 +37,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const cfg_tavily = document.getElementById('cfg_tavily');
     const cfg_spotify_id = document.getElementById('cfg_spotify_id');
     const cfg_spotify_secret = document.getElementById('cfg_spotify_secret');
-    const searchTriggerNote = document.getElementById('searchTriggerNote');
+    // searchTriggerNote removed; Tavily integration is now automatic
 
     // --- Security / input helpers ---
     // Required credentials are treated as sensitive and kept in sessionStorage (less persistent than localStorage)
@@ -67,13 +67,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (el) el.addEventListener('input', onCredentialInputChange);
     });
 
-    // Show search trigger note only if Tavily key exists
-    function updateSearchTriggerNote() {
-        if (!searchTriggerNote) return;
-        const key = (cfg_tavily && cfg_tavily.value && cfg_tavily.value.trim()) || localStorage.getItem('cfg_tavily') || '';
-        searchTriggerNote.style.display = key ? 'block' : 'none';
-    }
-    updateSearchTriggerNote();
+    // Removed updateSearchTriggerNote; no UI hint needed for automatic search augmentation
 
 
     // --- State & Audio Variables ---
@@ -233,6 +227,15 @@ document.addEventListener('DOMContentLoaded', () => {
                         window.history.replaceState({}, '', `${window.location.pathname}?session_id=${sessionId}`);
                         // fully reset UI
                         resetAllUI();
+                        // Clear all stored API keys on new session (required + optional)
+                        try {
+                            ['cfg_murf','cfg_assemblyai','cfg_gemini'].forEach(k => { sessionStorage.removeItem(k); localStorage.removeItem(k); });
+                            ['cfg_opencage','cfg_tavily','cfg_spotify_id','cfg_spotify_secret'].forEach(k => localStorage.removeItem(k));
+                            console.log('[Session] Cleared stored API keys for new session');
+                        } catch(e) { console.warn('Key clear failed', e); }
+                        // Also blank out any inputs if config panel is open
+                        [cfg_murf,cfg_assemblyai,cfg_gemini,cfg_opencage,cfg_tavily,cfg_spotify_id,cfg_spotify_secret].forEach(el=>{ if(el) el.value=''; });
+                        updateRecordButtonState();
                     } else {
                         statusDisplay.textContent = 'Could not start new session.';
                     }
@@ -255,15 +258,17 @@ document.addEventListener('DOMContentLoaded', () => {
     document.body.classList.add('modal-open');
 
     // populate fields from localStorage when opening
-    // Required (sensitive): prefer sessionStorage to reduce persistent exposure
-    cfg_murf.value = sessionStorage.getItem('cfg_murf') || localStorage.getItem('cfg_murf') || '';
-    cfg_assemblyai.value = sessionStorage.getItem('cfg_assemblyai') || localStorage.getItem('cfg_assemblyai') || '';
-    cfg_gemini.value = sessionStorage.getItem('cfg_gemini') || localStorage.getItem('cfg_gemini') || '';
-    // Optional: keep in localStorage
-    cfg_opencage.value = localStorage.getItem('cfg_opencage') || '';
-    cfg_tavily.value = localStorage.getItem('cfg_tavily') || '';
-    cfg_spotify_id.value = localStorage.getItem('cfg_spotify_id') || '';
-    cfg_spotify_secret.value = localStorage.getItem('cfg_spotify_secret') || '';
+    // NOTE: For privacy and to ensure runtime-only entry, do NOT autofill API keys when opening the UI.
+    // Leave inputs empty by default; users can paste keys and save them if desired.
+    cfg_murf.value = '';
+    cfg_assemblyai.value = '';
+    cfg_gemini.value = '';
+    // Optional inputs start empty as well
+    cfg_opencage.value = '';
+    cfg_tavily.value = '';
+    cfg_spotify_id.value = '';
+    cfg_spotify_secret.value = '';
+    console.debug('[Config] Opened config modal with empty inputs (no autofill).');
     }
 
     function closeConfig() {
@@ -322,14 +327,28 @@ document.addEventListener('DOMContentLoaded', () => {
             // Send required keys to server to configure runtime APIs
             (async () => {
                 try {
+                    const payload = {
+                        murf: cfg_murf.value.trim(),
+                        assemblyai: cfg_assemblyai.value.trim(),
+                        gemini: cfg_gemini.value.trim(),
+                        opencage: (cfg_opencage.value || '').trim(),
+                        tavily: (cfg_tavily.value || '').trim(),
+                        spotify_client_id: (cfg_spotify_id.value || '').trim(),
+                        spotify_client_secret: (cfg_spotify_secret.value || '').trim()
+                    };
+                    console.log('[Config] Sending runtime key payload (redacted):', {
+                        murf: !!payload.murf,
+                        assemblyai: !!payload.assemblyai,
+                        gemini: !!payload.gemini,
+                        opencage: !!payload.opencage,
+                        tavily: !!payload.tavily,
+                        spotify_client_id: !!payload.spotify_client_id,
+                        spotify_client_secret: !!payload.spotify_client_secret
+                    });
                     const res = await fetch('/config/keys', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            murf: cfg_murf.value.trim(),
-                            assemblyai: cfg_assemblyai.value.trim(),
-                            gemini: cfg_gemini.value.trim()
-                        })
+                        body: JSON.stringify(payload)
                     });
                     if (!res.ok) {
                         const body = await res.json().catch(() => ({}));
@@ -354,7 +373,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     hideConfigError();
                     closeConfig();
                     updateRecordButtonState();
-                    updateSearchTriggerNote();
+                    console.log('[Config] Runtime keys applied successfully.');
                     statusDisplay.textContent = 'Settings saved and applied.';
                 } catch (err) {
                     console.error('Failed to send keys to server', err && err.message ? err.message : err);
@@ -512,8 +531,12 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                         case 'playlist_recommendations': {
                             try {
+                                console.log('[WebSocket] playlist_recommendations received:', data);
                                 const pls = data.playlists || [];
                                 const mood = data.mood || '';
+                                if (!pls || pls.length === 0) {
+                                    console.warn('[WebSocket] playlist_recommendations contained no playlists for mood:', mood);
+                                }
                                 appendPlaylistCards(pls, mood);
                             } catch (e) {}
                             break;
