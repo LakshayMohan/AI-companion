@@ -276,6 +276,54 @@ Log Inspection: run with `LOG_LEVEL=DEBUG` (if you wrap logging) or modify `logg
 
 ---
 
+---
+## 🏆 30-Day Challenge Journey
+
+<details>
+<summary><strong>🎯 Click to see complete development timeline</strong></summary>
+
+### **Days 1-10: Foundation**
+
+- ✅ **Day 1**: Basic FastAPI web app with dummy response simulation
+- ✅ **Day 2**: REST API endpoint for text-to-speech with secure .env configuration
+- ✅ **Day 3**: Frontend UI development with JavaScript fetch API integration
+- ✅ **Day 4**: Client-side "Echo Bot" using MediaRecorder API
+- ✅ **Day 5**: Client-to-server audio uploading implementation
+- ✅ **Day 6**: AssemblyAI speech-to-text integration with glassmorphism UI
+- ✅ **Day 7**: Echo Bot v2 with voice selection feature
+- ✅ **Day 8**: Google Gemini LLM integration for intelligent responses
+- ✅ **Day 9**: Complete end-to-end conversational pipeline
+- ✅ **Day 10**: Chat history and auto-record feature implementation
+
+### **Days 11-20: Enhancement**
+
+- ✅ **Day 11**: Full-stack error handling with fallback audio
+- ✅ **Day 12**: UI refinement with conversation logs
+- ✅ **Day 13**: Professional README.md documentation
+- ✅ **Day 14**: Service-oriented architecture refactoring
+- ✅ **Day 15**: WebSocket real-time communication channel
+- ✅ **Day 16**: Real-time audio streaming implementation
+- ✅ **Day 17**: Streaming transcription with Web Audio API
+- ✅ **Day 18**: Intelligent turn detection with AssemblyAI
+- ✅ **Day 19**: Streaming LLM responses integration
+- ✅ **Day 20**: Murf AI WebSocket streaming for TTS
+
+### **Days 21-30: Advanced Features**
+
+- ✅ **Day 21**: Base64 audio streaming to client over WebSocket
+- ✅ **Day 22**: Complete streaming pipeline with Web Audio API playback
+- ✅ **Day 23**: Seamless end-to-end conversation flow with context
+- ✅ **Day 24**: VoiceIQ personality development with system prompting
+- ✅ **Day 25**: Advanced conversation features and error handling
+- ✅ **Day 26**: Web search integration with Tavily API
+- ✅ **Day 27**: Dynamic configuration management system
+- ✅ **Day 28**: Cloud deployment on Render.com with HTTP streaming
+- ✅ **Day 29**: Comprehensive documentation and feature updates
+- 🎯 **Day 30**: Final showcase and project completion
+
+</details>
+
+---
 ## 14. Development Notes
 
 * Restart required only when changing environment variables (unless using runtime key endpoint in dev).
@@ -332,9 +380,19 @@ pip install -r requirements.txt
 uvicorn main:app --reload
 # Browser: (https://ai-companion-ihj1.onrender.com) → Config → Enter keys → Save → Record
 ```
+---
+
+## 19. Acknowledgments
+
+- **[Murf AI](https://murf.ai/)** - For the incredible voice synthesis technology and the 30-day challenge
+- **[AssemblyAI](https://www.assemblyai.com/)** - For robust speech recognition capabilities
+- **[Google](https://ai.google.dev/)** - For the powerful Gemini language model
+- **[Tavily](https://tavily.com/)** - For real-time web search integration
+- **[Render.com](https://render.com/)** - For reliable cloud hosting
 
 ---
 
+https://ai-companion-ihj1.onrender.com
 For production guidance (auth, rate limiting, secrets management) see Section 11.
 
 Feel free to adapt and extend! PRs welcome once a contribution workflow & license are defined.
