@@ -15,6 +15,7 @@ import base64
 from typing import Optional, Dict, Any, List
 import re
 import httpx
+import logging
 
 from . import config
 
@@ -40,6 +41,7 @@ async def _fetch_token() -> Optional[str]:
         data = r.json()
         _SPOTIFY_TOKEN = data.get("access_token")
         _SPOTIFY_TOKEN_EXP = time.time() + int(data.get("expires_in", 3600))
+    logging.debug("Obtained new Spotify access token (expires_in=%s)", data.get("expires_in"))
     return _SPOTIFY_TOKEN
 
 async def search_track(query: str) -> Optional[Dict[str, Any]]:
@@ -118,6 +120,7 @@ async def search_playlists(mood: str, limit: int = 3) -> List[Dict[str, Any]]:
     """
     token = await _fetch_token()
     if not token:
+        logging.debug("Spotify search_playlists aborted: missing token (credentials provided? %s)", bool(config.SPOTIFY_CLIENT_ID and config.SPOTIFY_CLIENT_SECRET))
         return []
     q = _normalize_mood(mood)
     params = {"q": q, "type": "playlist", "limit": limit}
@@ -146,12 +149,17 @@ async def search_playlists(mood: str, limit: int = 3) -> List[Dict[str, Any]]:
                     "image": image_url,
                 })
             return out
-    except Exception:
+    except httpx.HTTPStatusError as e:
+        logging.error("Spotify playlist search HTTP error %s: %s", e.response.status_code, e.response.text[:300])
+        return []
+    except Exception as e:
+        logging.error("Spotify playlist search failed: %s", e)
         return []
 
 async def playlist_tracks(playlist_id: str) -> List[Dict[str, Any]]:
     token = await _fetch_token()
     if not token:
+        logging.debug("Spotify playlist_tracks aborted: missing token (credentials provided? %s)", bool(config.SPOTIFY_CLIENT_ID and config.SPOTIFY_CLIENT_SECRET))
         return []
     url = f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks"
     params = {"fields": "items(track(name,artists(name),preview_url,external_urls,duration_ms,album(images)))", "limit": 100}
@@ -184,7 +192,11 @@ async def playlist_tracks(playlist_id: str) -> List[Dict[str, Any]]:
                     "image": image,
                 })
             return tracks
-    except Exception:
+    except httpx.HTTPStatusError as e:
+        logging.error("Spotify playlist tracks HTTP error %s: %s", e.response.status_code, e.response.text[:300])
+        return []
+    except Exception as e:
+        logging.error("Spotify playlist tracks fetch failed: %s", e)
         return []
 
 __all__ = [

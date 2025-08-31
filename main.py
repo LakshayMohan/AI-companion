@@ -1258,6 +1258,31 @@ async def get_chat_history(session_id: str):
     return {"history": chat_history[session_id]}
 
 
+@app.get("/health/spotify")
+async def spotify_health():
+    """Lightweight health probe for Spotify credentials & token fetch.
+
+    Returns JSON with:
+    - credentials: bool (client id & secret present in runtime config)
+    - token_obtained: bool (was a token successfully fetched right now)
+    - expires_in: seconds remaining on cached token (if any)
+    Useful on Render to diagnose missing env / runtime key issues.
+    """
+    have_creds = bool(SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET)
+    remaining = 0
+    token_ok = False
+    global _spotify_token, _spotify_token_expires_at
+    if have_creds:
+        try:
+            t = await get_spotify_token()
+            token_ok = bool(t)
+            if token_ok and _spotify_token_expires_at:
+                remaining = int(_spotify_token_expires_at - _time.time())
+        except Exception as e:
+            logging.error("Spotify health check token fetch failed: %s", e)
+    return {"credentials": have_creds, "token_obtained": token_ok, "expires_in": remaining}
+
+
 @app.get("/recommend/{mood}")
 async def recommend_playlists(mood: str):
     """Return 2-3 Spotify playlists that match the given mood.

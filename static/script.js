@@ -42,16 +42,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const saveConfigBtn = document.getElementById('saveConfig');
     const closeConfigBtn = document.getElementById('closeConfig');
 
-    // Config form fields (client-only storage) - These map to server-side env vars described in main.py
-    // NOTE: The server reads keys from the .env file at startup. The client stores keys locally in localStorage
-    // for convenience during development/testing. The mapping is:
-    // cfg_murf -> MURF_API_KEY
-    // cfg_assemblyai -> ASSEMBLYAI_API_KEY
-    // cfg_gemini -> GEMINI_API_KEY
-    // cfg_opencage -> OPENCAGE_API_KEY (optional)
-    // cfg_tavily -> TRAVILY_API_KEY (optional)
-    // cfg_spotify_id -> CLIENT_ID (optional)
-    // cfg_spotify_secret -> CLIENT_SECRET (optional)
+    // Config form fields (runtime-only). We intentionally do not pre-populate
+    // or persist sensitive keys. User must paste keys each session for privacy.
     const cfg_murf = document.getElementById('cfg_murf');
     const cfg_assemblyai = document.getElementById('cfg_assemblyai');
     const cfg_gemini = document.getElementById('cfg_gemini');
@@ -67,15 +59,7 @@ document.addEventListener('DOMContentLoaded', () => {
      * Required keys stored in sessionStorage (cleared on tab close).
      * Optional keys stored in localStorage for convenience.
      */
-    function safeStoreCredential(id, value) {
-        if (!id) return;
-        const v = (value || '').trim();
-        if (v === '') {
-            try { sessionStorage.removeItem(id); } catch (e) {}
-        } else {
-            try { sessionStorage.setItem(id, v); } catch (e) {}
-        }
-    }
+    function safeStoreCredential(id, value) { /* Deprecated: no persistence for runtime-only keys */ }
 
     function onCredentialInputChange(e) {
         /**
@@ -93,9 +77,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // attach live listeners so the record button enables immediately when fields are filled
-    [cfg_murf, cfg_assemblyai, cfg_gemini].forEach(el => {
-        if (el) el.addEventListener('input', onCredentialInputChange);
-    });
+    [cfg_murf, cfg_assemblyai, cfg_gemini].forEach(el => { if (el) el.addEventListener('input', onCredentialInputChange); });
 
     // Removed updateSearchTriggerNote; no UI hint needed for automatic search augmentation
 
@@ -259,8 +241,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         resetAllUI();
                         // Clear all stored API keys on new session (required + optional)
                         try {
-                            ['cfg_murf','cfg_assemblyai','cfg_gemini'].forEach(k => { sessionStorage.removeItem(k); localStorage.removeItem(k); });
-                            ['cfg_opencage','cfg_tavily','cfg_spotify_id','cfg_spotify_secret'].forEach(k => localStorage.removeItem(k));
+                            // Clear any ephemeral stored values (we no longer actively store them)
+                            ['cfg_murf','cfg_assemblyai','cfg_gemini','cfg_opencage','cfg_tavily','cfg_spotify_id','cfg_spotify_secret'].forEach(k => { try { sessionStorage.removeItem(k); localStorage.removeItem(k); } catch(_){} });
                             console.log('[Session] Cleared stored API keys for new session');
                         } catch(e) { console.warn('Key clear failed', e); }
                         // Also blank out any inputs if config panel is open
@@ -287,9 +269,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (backdrop) { backdrop.style.display = 'block'; backdrop.setAttribute('aria-hidden', 'false'); }
     document.body.classList.add('modal-open');
 
-    // populate fields from localStorage when opening
-    // NOTE: For privacy and to ensure runtime-only entry, do NOT autofill API keys when opening the UI.
-    // Leave inputs empty by default; users can paste keys and save them if desired.
+    // Do NOT autofill any keys (privacy & runtime-only requirement)
     cfg_murf.value = '';
     cfg_assemblyai.value = '';
     cfg_gemini.value = '';
@@ -339,9 +319,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (saveConfigBtn) {
         saveConfigBtn.addEventListener('click', () => {
             // Validate required keys before saving.
-            const murfVal = (cfg_murf && cfg_murf.value && cfg_murf.value.trim()) || sessionStorage.getItem('cfg_murf') || localStorage.getItem('cfg_murf') || '';
-            const assemblyVal = (cfg_assemblyai && cfg_assemblyai.value && cfg_assemblyai.value.trim()) || sessionStorage.getItem('cfg_assemblyai') || localStorage.getItem('cfg_assemblyai') || '';
-            const geminiVal = (cfg_gemini && cfg_gemini.value && cfg_gemini.value.trim()) || sessionStorage.getItem('cfg_gemini') || localStorage.getItem('cfg_gemini') || '';
+            const murfVal = (cfg_murf && cfg_murf.value && cfg_murf.value.trim()) || '';
+            const assemblyVal = (cfg_assemblyai && cfg_assemblyai.value && cfg_assemblyai.value.trim()) || '';
+            const geminiVal = (cfg_gemini && cfg_gemini.value && cfg_gemini.value.trim()) || '';
             // If any required key is missing, show inline error in the config panel and do not close
             if (!murfVal || !assemblyVal || !geminiVal) {
                 showConfigError('Please provide MURF, AssemblyAI and Gemini API keys before saving.');
@@ -389,16 +369,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         return;
                     }
 
-                    // Save optional keys locally and sensitive keys to sessionStorage
-                    try {
-                        safeStoreCredential('cfg_murf', cfg_murf.value);
-                        safeStoreCredential('cfg_assemblyai', cfg_assemblyai.value);
-                        safeStoreCredential('cfg_gemini', cfg_gemini.value);
-                    } catch (e) {}
-                    try { localStorage.setItem('cfg_opencage', cfg_opencage.value.trim()); } catch (e) {}
-                    try { localStorage.setItem('cfg_tavily', cfg_tavily.value.trim()); } catch (e) {}
-                    try { localStorage.setItem('cfg_spotify_id', cfg_spotify_id.value.trim()); } catch (e) {}
-                    try { localStorage.setItem('cfg_spotify_secret', cfg_spotify_secret.value.trim()); } catch (e) {}
+                    // No persistence: keys only live in memory server-side after POST
 
                     hideConfigError();
                     closeConfig();
@@ -456,9 +427,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // Disable Record if required keys are missing. Required: MURF, ASSEMBLYAI, GEMINI
     function hasRequiredKeys() {
     // Check current inputs first (user may be typing), then sessionStorage (sensitive), then localStorage
-    const murfVal = (cfg_murf && cfg_murf.value && cfg_murf.value.trim()) || sessionStorage.getItem('cfg_murf') || localStorage.getItem('cfg_murf') || '';
-    const assemblyVal = (cfg_assemblyai && cfg_assemblyai.value && cfg_assemblyai.value.trim()) || sessionStorage.getItem('cfg_assemblyai') || localStorage.getItem('cfg_assemblyai') || '';
-    const geminiVal = (cfg_gemini && cfg_gemini.value && cfg_gemini.value.trim()) || sessionStorage.getItem('cfg_gemini') || localStorage.getItem('cfg_gemini') || '';
+    const murfVal = (cfg_murf && cfg_murf.value && cfg_murf.value.trim()) || '';
+    const assemblyVal = (cfg_assemblyai && cfg_assemblyai.value && cfg_assemblyai.value.trim()) || '';
+    const geminiVal = (cfg_gemini && cfg_gemini.value && cfg_gemini.value.trim()) || '';
     return murfVal.trim() !== '' && assemblyVal.trim() !== '' && geminiVal.trim() !== '';
     }
 
@@ -879,9 +850,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const el = e.target.closest('.playlist-card');
         if (!el) return;
         e.preventDefault();
-        const href = el.getAttribute('href') || '';
-        // the playlist id is not present directly in href; store data-id attribute when creating cards
-        const pid = el.dataset.playlistId || (new URL(href, window.location.href).pathname.split('/').pop());
+    const href = el.getAttribute('href') || '';
+    // playlist id from data attribute (set during creation)
+    const pid = el.dataset.playlistId || (href ? (new URL(href, window.location.href).pathname.split('/').pop()) : '');
         const name = el.querySelector('.playlist-title') ? el.querySelector('.playlist-title').textContent : '';
         openPlaylistModal({ id: pid, name: name });
     });
