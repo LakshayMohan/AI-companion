@@ -1,4 +1,4 @@
-# AI Voice Companion (Murf / AssemblyAI / Gemini / Tavily / OpenCage / Spotify)
+# AI Voice Companion
 
 Comprehensive real‑time voice + AI companion with:
 
