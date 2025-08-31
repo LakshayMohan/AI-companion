@@ -12,6 +12,7 @@ import httpx
 import websockets
 import assemblyai as aai
 import google.generativeai as genai
+from app_core import config, history, spotify
 try:
     from tavily import TavilyClient
 except Exception:
@@ -43,18 +44,15 @@ load_dotenv()
 # Note: the web UI also allows storing API keys locally in the browser (localStorage) for quick testing.
 # Server-side environment variables are required if you want the server to call these services
 # directly on startup; changes to the .env file require restarting the FastAPI process.
-MURF_API_KEY = os.getenv("MURF_API_KEY")
-ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-MURF_CONTEXT_ID = os.getenv("MURF_CONTEXT_ID", "murf_context_global_1")
-MURF_WS_URL = os.getenv("MURF_WS_URL", "wss://api.murf.ai/v1/speech/stream-input")
-OPENCAGE_API_KEY = os.getenv("OPENCAGE_API_KEY")
-# Support both env var spellings: TRAVILY_API_KEY (preferred) and TAVILY_API_KEY (common typo)
-TRAVILY_API_KEY = os.getenv("TRAVILY_API_KEY") or os.getenv("TAVILY_API_KEY")
-
-# --- Spotify credentials (for mood-based recommendations) ---
-SPOTIFY_CLIENT_ID = os.getenv("CLIENT_ID")
-SPOTIFY_CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+MURF_API_KEY = config.MURF_API_KEY
+ASSEMBLYAI_API_KEY = config.ASSEMBLYAI_API_KEY
+GEMINI_API_KEY = config.GEMINI_API_KEY
+MURF_CONTEXT_ID = config.MURF_CONTEXT_ID
+MURF_WS_URL = config.MURF_WS_URL
+OPENCAGE_API_KEY = config.OPENCAGE_API_KEY
+TRAVILY_API_KEY = config.TRAVILY_API_KEY
+SPOTIFY_CLIENT_ID = config.SPOTIFY_CLIENT_ID
+SPOTIFY_CLIENT_SECRET = config.SPOTIFY_CLIENT_SECRET
 
 # Token cache
 _spotify_token: str | None = None
@@ -263,16 +261,9 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 chat_history = defaultdict(list)
 MAX_HISTORY_LENGTH = 40  # max messages (user+model) to keep per session
 
-def append_to_history(session_id: str, role: str, text: str):
-    """Append a message to session history and trim to MAX_HISTORY_LENGTH."""
-    if not session_id:
-        return
-    entry = {"role": role, "parts": [text], "timestamp": datetime.utcnow().isoformat()}
-    chat_history[session_id].append(entry)
-    # Trim oldest messages if over limit
-    if len(chat_history[session_id]) > MAX_HISTORY_LENGTH:
-        # drop the oldest entries
-        chat_history[session_id] = chat_history[session_id][-MAX_HISTORY_LENGTH:]
+append_to_history = history.append_to_history
+chat_history = history.chat_history
+MAX_HISTORY_LENGTH = history.MAX_HISTORY_LENGTH
 
 
 
@@ -828,7 +819,7 @@ class AudioStreamer:
                     # Detect mood and fetch playlist recommendations only when a concrete mood was found
                     try:
                         # Use the user's original transcript to decide whether to recommend music
-                        detected_mood = _detect_mood_from_text(user_text)
+                        detected_mood = spotify.detect_mood_from_text(user_text)
                         # _detect_mood_from_text returns 'mood' as a generic fallback; skip recommendations in that case
                         if detected_mood and detected_mood != 'mood':
                             playlists = await search_spotify_playlists(detected_mood, limit=3)
@@ -961,10 +952,11 @@ async def set_runtime_keys(payload: dict = Body(...)):
             raise HTTPException(status_code=400, detail='Missing required keys')
 
         # Update global variables in memory (do NOT log secret values)
+        config.update_runtime_keys(murf, assembly, gemini)
         global MURF_API_KEY, ASSEMBLYAI_API_KEY, GEMINI_API_KEY
-        MURF_API_KEY = murf
-        ASSEMBLYAI_API_KEY = assembly
-        GEMINI_API_KEY = gemini
+        MURF_API_KEY = config.MURF_API_KEY
+        ASSEMBLYAI_API_KEY = config.ASSEMBLYAI_API_KEY
+        GEMINI_API_KEY = config.GEMINI_API_KEY
 
         # Reconfigure dependent libraries where possible
         try:
@@ -1330,9 +1322,9 @@ async def agent_chat(session_id: str, file: UploadFile = File(...)):
     playlists_for_response = []
     try:
         # Use the user's original transcript to decide whether to recommend music
-        detected_mood = _detect_mood_from_text(user_text)
+        detected_mood = spotify.detect_mood_from_text(user_text)
         if detected_mood and detected_mood != 'mood':
-            playlists_for_response = await search_spotify_playlists(detected_mood, limit=3)
+            playlists_for_response = await spotify.search_playlists(detected_mood, limit=3)
     except Exception:
         playlists_for_response = []
 

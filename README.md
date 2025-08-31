@@ -20,23 +20,35 @@ Comprehensive real‑time voice + AI companion with:
 ┌────────────┐   PCM (16kHz)   ┌──────────────┐         ┌─────────────┐
 │  Browser   │ ───────────────▶│  FastAPI WS  │──PCM──▶ │ AssemblyAI   │
 │ (Audio API │                  │  /ws/audio   │         │  Streaming   │
-│  + UI)     │                  │              │◀ events │  (STT)       │
+│  + UI)     │                  │ (AudioStreamer)│      │  (STT)       │
 └────┬───────┘                  └──────┬───────┘         └─────────────┘
 	 │ LLM stream (JSON events)        │ final transcript
 	 ▼                                 ▼
 ┌────────────┐   prompt/history  ┌─────────────┐  weather/search  ┌──────────┐
 │  Chat UI   │◀──────────────────│ Gemini API  │◀────────────────▶│ Tavily   │
 └────────────┘                    └─────────────┘                  └──────────┘
-	   ▲                                      │
-	   │ audio (proxy /tts/fetch/{id})        │
-	   │                                      ▼
-   ┌────────┐     WS (upstream)       ┌────────────┐
-   │ Player │◀────────────────────────│  Murf TTS  │
-   └────────┘                         └────────────┘
-	   ▲                                     ▲
-	   │ mood detection                      │ playlist search
-	   │                                     │
-	   └────────────── Spotify API ◀─────────┘
+	▲                                      │
+	│ audio (proxy /tts/fetch/{id})        │
+	│                                      ▼
+┌────────┐     WS (upstream)       ┌────────────┐   ┌─────────────┐
+│ Player │◀────────────────────────│  Murf TTS  │◀──│ app_core/tts │
+└────────┘                         └────────────┘   └─────────────┘
+	▲                                     ▲
+	│ mood detection                      │ playlist search
+	│                                     │
+	└────────────── Spotify API ◀─────────┘
+
+Where the server responsibilities are split across modules:
+- `main.py` — app routes, WebSocket wiring and app startup
+- `app_core/history.py` — session chat memory and helpers
+- `app_core/config.py` — runtime key management and static defaults
+- `app_core/intents.py` — lightweight intent detection (weather/search)
+- `app_core/weather.py` — OpenCage + Open-Meteo helpers
+- `app_core/search.py` — Tavily search wrapper
+- `app_core/spotify.py` — Spotify token, mood detection, playlist/track helpers
+- AudioStreamer (class in `main.py`) — handles AssemblyAI streaming, buffers transcriptions and triggers LLM/TTS flows
+
+This modular layout keeps business logic (search/weather/spotify) separated from routing and streaming glue, making the code easier to test and evolve.
 ```
 
 Key flows:
@@ -80,61 +92,76 @@ Key flows:
 
 ```
 .
-├── main.py                # FastAPI app (endpoints, WebSocket, AI orchestration)
+├── main.py                    # FastAPI app (routes, WebSocket endpoint, startup)
+├── app_core/                  # Modular business logic and helpers
+│   ├── __init__.py
+│   ├── config.py              # runtime key toggles & static defaults
+│   ├── history.py             # in-memory chat history helpers
+│   ├── intents.py             # simple intent detectors (weather, search)
+│   ├── weather.py             # OpenCage + Open-Meteo helpers
+│   ├── search.py              # Tavily search helper
+│   └── spotify.py             # Spotify token & playlist helpers
 ├── static/
-│   ├── index.html         # UI markup + config modal
-│   ├── script.js          # Client logic (audio, websocket, chat, config)
-│   ├── styles.css         # Visual design, responsive + modal styling
-│   └── recorderWorklet.js # AudioWorklet processor (capturing PCM frames)
-├── requirements.txt       # Python dependencies
-└── README.md              # This documentation
+│   ├── index.html             # UI markup + config modal
+│   ├── script.js              # Client logic (audio, websocket, chat, config)
+│   ├── styles.css             # Visual design, responsive + modal styling
+│   └── recorderWorklet.js     # AudioWorklet processor (capturing PCM frames)
+├── requirements.txt           # Python dependencies
+└── README.md                  # This documentation
 ```
 
 ---
 
-## 5. Environment Variables
+## 5. Runtime Keys (Environment File Disabled)
 
-| Variable | Required | Purpose |
-|----------|----------|---------|
-| `MURF_API_KEY` | Yes (for TTS) | Murf text-to-speech API key. |
-| `ASSEMBLYAI_API_KEY` | Yes (for STT) | Streaming speech-to-text. |
-| `GEMINI_API_KEY` | Yes (for LLM) | Google Gemini responses. |
-| `OPENCAGE_API_KEY` | Optional | Geocoding for weather lookups. |
-| `TRAVILY_API_KEY` (or `TAVILY_API_KEY`) | Optional | Web search. |
-| `CLIENT_ID` / `CLIENT_SECRET` | Optional | Spotify client credentials. |
-| `MURF_WS_URL` | Optional | Override Murf streaming endpoint. |
-| `MURF_CONTEXT_ID` | Optional | Murf voice context identifier. |
-| (Future) `ADMIN_SECRET` | Recommended | Protect runtime key update endpoint (see Security). |
+All API keys must be supplied **at runtime** via the UI Config modal or a direct POST to `/config/keys`.
 
-> IMPORTANT: Never commit real production secrets to version control. Rotate any keys already exposed publicly.
+Why:
+* Prevent accidental use of committed secrets.
+* Make it explicit which keys are active (only those you intentionally inject this session).
+* Easier key rotation during development without restarts.
+
+Runtime POST body (all required):
+```json
+{ "murf": "<MURF_API_KEY>", "assemblyai": "<ASSEMBLYAI_API_KEY>", "gemini": "<GEMINI_API_KEY>" }
+```
+Optional (enter through UI for extra features):
+* `OPENCAGE_API_KEY` – weather geocoding
+* `TRAVILY_API_KEY` – web search
+* `CLIENT_ID` / `CLIENT_SECRET` – Spotify playlists
+
+Other (static) configuration still uses module defaults (e.g. `MURF_CONTEXT_ID`). If you need to customize those, edit `app_core/config.py` or extend the runtime endpoint.
+
+> IMPORTANT: Since `.env` loading is disabled, adding or editing a `.env` file has **no effect** unless you revert the change in `app_core/config.py`.
+
+Security tip: When you finish a session, refresh without re‑injecting keys to clear them from memory.
 
 ---
 
 ## 6. Setup & Run
 
-### 6.1 Create & Populate `.env`
-```
-MURF_API_KEY=...
-ASSEMBLYAI_API_KEY=...
-GEMINI_API_KEY=...
-OPENCAGE_API_KEY=...          # optional
-TRAVILY_API_KEY=...           # optional
-CLIENT_ID=...                 # optional (Spotify)
-CLIENT_SECRET=...             # optional (Spotify)
-```
-
-### 6.2 Install Dependencies
+### 6.1 Install Dependencies
 ```bash
 pip install -r requirements.txt
 ```
 
-### 6.3 Launch Dev Server
+### 6.2 Launch Dev Server
 ```bash
 uvicorn main:app --reload
 ```
 
-### 6.4 Access UI
+### 6.3 Access UI & Inject Keys
 Visit: http://localhost:8000
+
+1. Open the Config (gear) modal.
+2. Enter Murf, AssemblyAI, and Gemini keys (required). Save.
+3. (Optional) Enter weather/search/Spotify keys and save again.
+4. Press Record.
+
+Headless / programmatic injection example (PowerShell):
+```powershell
+Invoke-RestMethod -Method Post -Uri http://localhost:8000/config/keys -Body (@{murf='YOUR_MURF';assemblyai='YOUR_AAI';gemini='YOUR_GEMINI'} | ConvertTo-Json) -ContentType 'application/json'
+```
 
 ---
 
@@ -201,7 +228,7 @@ Fallback Hierarchy: AudioWorklet → MediaStreamTrackProcessor → (legacy) Scri
 
 | Aspect | Current | Recommendation |
 |--------|---------|----------------|
-| Secrets in Repo | (If committed) must be rotated. | Remove secrets from commits, rotate exposed keys. |
+| Secrets in Repo | (If committed) must be rotated. | Remove secrets from commits, rotate exposed keys. `.env` now ignored. |
 | `/config/keys` | Open (no auth) for dev convenience. | Require header token (e.g. `ADMIN_SECRET`) or disable entirely in prod. |
 | CORS | `*` (wide-open). | Restrict to allowed origins in production. |
 | Client Key Storage | Required keys in sessionStorage, optional in localStorage. | Move all secrets to server-only; never send to browser. |
@@ -282,9 +309,8 @@ This project streams audio & interacts with third-party APIs. Ensure compliance 
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env   # (create and populate with valid keys)
 uvicorn main:app --reload
-# Open browser → http://localhost:8000 → Config → Enter keys → Save → Record
+# Browser: http://localhost:8000 → Config → Enter keys → Save → Record
 ```
 
 ---
