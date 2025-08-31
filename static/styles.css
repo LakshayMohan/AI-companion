@@ -345,10 +345,18 @@ h4 {
     transform: scale(0.95);
 }
 
+.status-container {
+    display: flex;
+    flex-direction: row;
+    justify-content: center;
+    gap: 10px;
+    margin: 10px 0;
+}
+
 .websocket-status {
     font-size: 0.9rem;
     color: #888;
-    margin: 10px 0;
+    margin: 0;
     padding: 8px 12px;
     border-radius: 6px;
     background: rgba(0, 0, 0, 0.2);
@@ -371,7 +379,7 @@ h4 {
 .transcription-status {
     font-size: 0.9rem;
     color: #888;
-    margin: 10px 0;
+    margin: 0;
     padding: 8px 12px;
     border-radius: 6px;
     background: rgba(0, 0, 0, 0.2);
@@ -414,9 +422,9 @@ h4 {
     position: fixed;
     top: 18px;
     /* place near the New Session button by default; we'll nudge it via the top-right helper class */
-    left: 80%;
+    
     transform: none;
-    right: 150px; /* place config button to the left of New Session */
+    right: 180px; /* place config button to the left of New Session */
     z-index: 60;
     background: rgba(0,0,0,0.3);
     color: #fff;
