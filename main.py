@@ -780,14 +780,20 @@ class AudioStreamer:
             # Add user message to chat history (trimmed)
             append_to_history(session_id, "user", user_text)
             
-            # Build augmented prompt if we have search context
-            augmented_text = user_text
+            # Build augmented prompt (with capability priming)
+            system_capabilities = (
+                "You are an AI voice assistant with tool access.\n"
+                "You CAN: (1) stream real-time transcription, (2) perform web searches (Tavily) for factual/current queries when context added, "
+                "(3) recommend Spotify playlists for the user's mood (the backend will fetch them), (4) provide weather info if asked, "
+                "(5) speak responses via TTS.\n"
+                "When the user asks for music or playlists for a mood, say you are sending curated Spotify playlists (the UI will show them) "
+                "and give a short (<=2 sentence) textual summary. Do not claim you lack access. Avoid fabricating playlist names; the backend provides them.\n"
+                "Keep answers concise unless the user explicitly requests detail."
+            )
+            augmented_text = f"{system_capabilities}\n\nUser: {user_text}" if user_text else system_capabilities
             if search_snippet:
                 augmented_text = (
-                    "Using the following recent web search context, answer the user's query accurately. "
-                    "If the context seems unrelated, rely on general knowledge.\n\n"
-                    f"[Web Search Context]\n{search_snippet}\n\n[User Question]\n{user_text}"
-                )
+                    f"{system_capabilities}\n\nRecent Web Search Context:\n{search_snippet}\n\nUser Question: {user_text}" )
 
             # Initialize Gemini model
             model = genai.GenerativeModel('gemini-1.5-flash')

@@ -739,6 +739,15 @@ document.addEventListener('DOMContentLoaded', () => {
     function openPlaylistModal(playlist) {
         // playlist: {name, url, id, image}
         if (!playlist) return;
+        // If required modal nodes are missing (embedded/minimal UI), open Spotify URL as fallback
+        if (!playlistModal || !playlistModalTitle || !playlistTracksNode) {
+            const fallbackUrl = playlist.url || (playlist.id ? `https://open.spotify.com/playlist/${encodeURIComponent(playlist.id)}` : null);
+            if (fallbackUrl) {
+                window.open(fallbackUrl, '_blank');
+            }
+            return;
+        }
+
         playlistModalTitle.textContent = playlist.name || 'Playlist';
         playlistTracksNode.innerHTML = '<div class="loading">Loading tracks…</div>';
         playlistModal.style.display = 'flex';
@@ -751,7 +760,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 currentPlaylist = data.tracks || [];
                 currentTrackIndex = 0;
             }).catch(err => {
-                playlistTracksNode.innerHTML = '<div class="error">Could not load tracks.</div>';
+                try { playlistTracksNode.innerHTML = '<div class="error">Could not load tracks.</div>'; } catch(_){}
             });
     }
 
@@ -850,11 +859,13 @@ document.addEventListener('DOMContentLoaded', () => {
         const el = e.target.closest('.playlist-card');
         if (!el) return;
         e.preventDefault();
-    const href = el.getAttribute('href') || '';
-    // playlist id from data attribute (set during creation)
-    const pid = el.dataset.playlistId || (href ? (new URL(href, window.location.href).pathname.split('/').pop()) : '');
+        // allow href or direct dataset
+        const href = el.getAttribute('href') || el.href || '';
+        // playlist id from data attribute (set during creation)
+        const pid = el.dataset.playlistId || (href ? (new URL(href, window.location.href).pathname.split('/').pop()) : '');
         const name = el.querySelector('.playlist-title') ? el.querySelector('.playlist-title').textContent : '';
-        openPlaylistModal({ id: pid, name: name });
+        const url = href || (pid ? `https://open.spotify.com/playlist/${encodeURIComponent(pid)}` : '');
+        openPlaylistModal({ id: pid, name: name, url: url });
     });
 
 
