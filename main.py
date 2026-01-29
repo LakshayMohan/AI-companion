@@ -796,7 +796,7 @@ class AudioStreamer:
                     f"{system_capabilities}\n\nRecent Web Search Context:\n{search_snippet}\n\nUser Question: {user_text}" )
 
             # Initialize Gemini model
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            model = genai.GenerativeModel('gemini-2.5-flash')
             
             # Send start message to client
             start_message = {
